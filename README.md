@@ -3,7 +3,7 @@
 部署在 NAS 上的家庭财富管理 Web 应用，单容器 Docker 部署，自适应 PC / 手机端。
 多账号、数据隔离、**资金全链路强关联**、AI 分析、MCP 接口，一套系统管全家人的钱。
 
-当前版本：**v1.7.5**
+当前版本：**v1.7.6**
 
 ## ✨ 功能总览
 
@@ -81,6 +81,28 @@ docker compose up -d --build    # 小改动后重新构建
 docker compose down && docker compose build --no-cache && docker compose up -d   # 大版本升级
 ```
 
+### 方式二：从 GitHub Container Registry 直接拉取（免 NAS 构建，推荐 ⭐）
+
+镜像由 GitHub Actions 在**每次 push main** 时自动构建并推送到 `ghcr.io/healson/family-wealth:latest`，NAS 上**无需 node / docker build 环境**，直接拉取运行：
+
+```bash
+# 1. 登录 GHCR（私有仓库必须登录；密码处用有 read:packages 权限的 PAT）
+docker login ghcr.io -u healson
+#   → 密码填 PAT（建议单独建一个只勾 read:packages 的令牌，比全权限 PAT 安全）
+
+# 2. 拉取预构建镜像并启动（默认 docker-compose.yml 已指向 GHCR 镜像）
+docker compose pull
+docker compose up -d
+
+# 3. 访问 http://NAS地址:8000
+```
+
+- **升级**：`docker compose pull && docker compose up -d` 即可拉到最新镜像（无需 --no-cache 重建）
+- **私有镜像可见性**：首次构建后到 GitHub → 个人头像 → **Packages → family-wealth → Settings** 确认可见性为 **Private**（与私有仓库一致；若显示 Public 请改为 Private）
+- **想本地构建**（NAS 不能访问 GitHub / 想改源码现场构建）：用 `docker compose -f docker-compose.local.yml up -d --build`（本地构建版，对应原 tar.gz 部署流程）
+
+> 镜像地址恒为 `ghcr.io/healson/family-wealth:latest`；也可按 git 标签拉取具体版本（如 `:1.7.5`）。
+
 ## 🔄 升级现有版本（旧版 → v1.6.2）
 
 > 升级**不会丢失数据**：数据库在 `./data` 目录（宿主机映射），与容器镜像相互独立；
@@ -126,9 +148,9 @@ docker compose up -d
 ### 第四步：验证升级成功
 
 ```bash
-# 1. 检查版本号（应返回 v1.7.5）
+# 1. 检查版本号（应返回 v1.7.6）
 curl http://NAS地址:8000/api/health
-# → {"status":"ok","version":"1.7.5"}
+# → {"status":"ok","version":"1.7.6"}
 
 # 2. 浏览器登录，确认数据完整（保单/账户/收支/借款/模板等都在）
 
@@ -399,7 +421,8 @@ family-wealth/
 
 | 版本 | 内容 |
 |---|---|
-| **v1.7.5（当前）** | **修复记一笔「支出」按钮不选中**：日常开支「记一笔」弹窗的「类型」分段控制器在隐藏容器（display:none）中挂载导致选中滑块无法定位、按钮显示未选中（表单值实为支出）。主弹窗由 `forceRender` 改为 `destroyOnClose`，与模板/定时弹窗一致——每次打开才在可见容器中挂载，选中态稳定高亮；默认类型仍为**支出** |
+| **v1.7.6（当前）** | **财富总览资产口径增强（进/出/净）**：金融总资产标签由「资产+净资产」两卡增强为**「进（金融总资产）/ 出（金融负债）/ 净（金融净资产）」三卡并列**，明确展示进出数据与净数据；总资产标签同步展示「家庭总资产/总负债/净资产」三卡并标注「保单为保障、不计入资产」；「记一笔」默认支出经 `initialValues` 加固（与既有 `destroyOnClose` 互补），各入口均回到支出 |
+| v1.7.5 | **修复记一笔「支出」按钮不选中**：日常开支「记一笔」弹窗的「类型」分段控制器在隐藏容器（display:none）中挂载导致选中滑块无法定位、按钮显示未选中（表单值实为支出）。主弹窗由 `forceRender` 改为 `destroyOnClose`，与模板/定时弹窗一致——每次打开才在可见容器中挂载，选中态稳定高亮；默认类型仍为**支出** |
 | v1.7.3 | **AI 助手支持投资日盈亏查询**：AI 上下文新增「投资日盈亏(按天)」数据（最近 90 条，含日期/账户/金额/备注），可回答「前天/某天投资盈亏」类问题；MCP 新增 `query_financial_pnl` 工具（按日期范围/账户查询按日盈亏） |
 | v1.7.2 | **三笔钱合并为一个饼图**：三笔钱由三个独立环形图合并为**一个饼图**（应急橙/稳健蓝/长期绿三色分区 + 图例），三笔钱的说明（用途/去向/收益/推荐比例）一并移入卡片；布局调整为「总资产/净资产 + 净资产构成 + 三笔钱」三列，位置在净资产构成右侧 |
 | v1.7.1 | **三笔钱配置补充推荐比例**：三个饼图卡片下方以灰色字标注推荐占比（应急 30%-40% / 稳健 40%-50% / 长期 10%-30%），说明文字统一灰色展示 |

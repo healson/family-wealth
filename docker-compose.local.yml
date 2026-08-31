@@ -1,8 +1,12 @@
+# 本地构建版（对应 tar.gz 部署流程）：在 NAS 上用 node + docker build 现场构建前端。
+# 用法：docker compose -f docker-compose.local.yml up -d --build
+# 默认 docker-compose.yml 已改为从 GHCR 直接拉取预构建镜像，无需本地构建。
+
 services:
   family-wealth:
-    # 默认从 GitHub Container Registry 拉取预构建镜像
-    # （push main 后 GitHub Actions 自动构建并推送，NAS 无需 node/docker build 环境）
-    image: ghcr.io/healson/family-wealth:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: family-wealth
     restart: unless-stopped
     ports:
@@ -14,13 +18,9 @@ services:
       - JWT_EXPIRE_HOURS=168         # 登录有效期（小时），默认 7 天
       - TZ=Asia/Shanghai
       # ---- AI 助手配置（可选，不配置则 AI 对话提示未配置）----
-      # 兼容 OpenAI / DeepSeek / 通义 / 本地 Ollama（OpenAI 格式接口）
       - AI_API_KEY=                  # 如 sk-xxx（本地 Ollama 可不填）
-      - AI_BASE_URL=https://api.openai.com/v1   # DeepSeek: https://api.deepseek.com/v1；Ollama: http://127.0.0.1:11434/v1
-      - AI_MODEL=gpt-4o-mini         # DeepSeek: deepseek-chat；Ollama: 如 qwen2.5
-      # ---- MCP 鉴权令牌（可选，供外部 AI Agent 连接）----
-      # - MCP_TOKEN=change-me        # 设置后，外部 Agent 需带此令牌访问 /mcp
-      # - MCP_USERNAME=admin         # stdio 模式默认操作的账号
+      - AI_BASE_URL=https://api.openai.com/v1
+      - AI_MODEL=gpt-4o-mini
     volumes:
       - ./data:/data                 # SQLite 数据库持久化目录（重要！勿删）
     healthcheck:
@@ -31,9 +31,6 @@ services:
     networks:
       - default
 
-# 为项目指定独立网段，避免占用 Docker 默认地址池
-# （部分 NAS 因网络过多报 "all predefined address pools have been fully subnetted"）
-# 若 10.89.0.0/24 与你内网冲突，可改为 10.88.0.0/24、172.31.0.0/24 等
 networks:
   default:
     driver: bridge
