@@ -1,0 +1,8 @@
+{
+  "appId": "com.family.wealth",
+  "appName": "家庭财富",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}

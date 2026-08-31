@@ -1,0 +1,39 @@
+# ===== 用户数据（含财务 SQLite，绝不入库） =====
+data/
+
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# ===== 前端 Node / 构建产物 =====
+frontend/node_modules/
+frontend/dist/
+
+# ===== 安卓（Capacitor）构建产物（源工程保留） =====
+frontend/android/.gradle/
+frontend/android/build/
+frontend/android/app/build/
+frontend/android/app/src/main/assets/public/
+frontend/android/app/src/main/assets/public*
+
+# ===== 本地/环境变量（含密钥，绝不入库） =====
+.env
+.env.local
+*.local
+
+# ===== 编辑器 / 操作系统 =====
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ===== 截图 / 临时日志 =====
+screenshots/
+*.log
+
+# ===== Vite 临时编译产物 =====
+vite.config.js.timestamp-*.mjs
+*.timestamp-*.mjs

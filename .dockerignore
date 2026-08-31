@@ -1,0 +1,13 @@
+# Docker 构建上下文排除
+node_modules
+frontend/node_modules
+frontend/dist
+data
+*.db
+.git
+.idea
+.vscode
+__pycache__
+*.pyc
+.venv
+venv
