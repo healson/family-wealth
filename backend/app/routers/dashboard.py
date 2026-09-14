@@ -21,7 +21,7 @@ from ..models import (
     Transaction,
     User,
 )
-from ..utils import collect_account_flows, last_n_months
+from ..utils import asset_cash_paid, collect_account_flows, last_n_months
 
 router = APIRouter(
     prefix="/api/dashboard",
@@ -302,9 +302,12 @@ def summary(
     policy_paid = db.query(func.coalesce(func.sum(PolicyPayment.amount), 0))\
         .filter(PolicyPayment.user_id == uid,
                 PolicyPayment.date >= month_start, PolicyPayment.date <= month_end).scalar() or 0
-    asset_bought = db.query(func.coalesce(func.sum(Asset.purchase_price), 0))\
-        .filter(Asset.user_id == uid, Asset.purchase_date.isnot(None),
-                Asset.purchase_date >= month_start, Asset.purchase_date <= month_end).scalar() or 0
+    asset_bought = sum(
+        asset_cash_paid(a) for a in db.query(Asset).filter(
+            Asset.user_id == uid, Asset.purchase_date.isnot(None),
+            Asset.purchase_date >= month_start, Asset.purchase_date <= month_end,
+        ).all()
+    )
 
     inflow = {
         "收入": round(float(month_income), 2),

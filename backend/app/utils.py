@@ -81,6 +81,18 @@ def apply_account_delta(db: Session, account_id: int | None, delta: float):
     account.balance = float(account.balance or 0) + delta
 
 
+def asset_cash_paid(asset) -> float:
+    """固定资产购入实际从付款账户支出的现金 = 购入价 − 贷款余额（不低于 0）。
+
+    贷款部分是银行直接付给卖方的，从未经过家庭账户，故不计入账户支出。
+    该口径同时用于：账户余额扣减、资金流水展示、总览「资产购入」流向统计，
+    三处必须一致，否则余额对账会出现差异。
+    """
+    price = float(getattr(asset, "purchase_price", 0) or 0)
+    loan = float(getattr(asset, "loan_balance", 0) or 0)
+    return max(price - loan, 0.0)
+
+
 def collect_account_flows(db: Session, account_id: int, user_id: int) -> list[dict]:
     """收集某账户相关的全部资金动作（统一口径，供资金流水展示与余额对账使用）。
     返回 [{date, kind, title, amount, note, ref_type, ref_id, ref_parent_id}]，
@@ -152,8 +164,13 @@ def collect_account_flows(db: Session, account_id: int, user_id: int) -> list[di
     from .models import PolicyPayment
 
     payments = db.query(PolicyPayment).join(InsurancePolicy, PolicyPayment.policy_id == InsurancePolicy.id)\
-        .filter(InsurancePolicy.account_id == account_id, PolicyPayment.user_id == user_id).all()
+        .filter(PolicyPayment.user_id == user_id).all()
     for p in payments:
+        # 归属账户优先用「本笔缴费账户快照」；存量旧数据无快照时回退到保单当前缴费账户。
+        # 若用保单当前账户反推，改过缴费账户后历史缴费会被整体重新归属 → 对账失衡。
+        owner = p.account_id or (p.policy.account_id if p.policy else None)
+        if owner != account_id:
+            continue
         rows.append({
             "date": p.date.isoformat(), "kind": "保单",
             "title": f"缴费 · {p.policy.product_name if p.policy else '保单'}",
@@ -162,19 +179,30 @@ def collect_account_flows(db: Session, account_id: int, user_id: int) -> list[di
             "ref_type": "policy_payment", "ref_id": p.id,
             "ref_parent_id": p.policy_id,
         })
-    # 固定资产购入
+    # 固定资产购入（仅「全款部分」走账户，贷款部分不经账户）
     for a in db.query(Asset).filter(Asset.account_id == account_id, Asset.user_id == user_id).all():
+        cash_paid = asset_cash_paid(a)
+        if cash_paid <= 0:
+            continue
         d = (a.purchase_date or a.created_at.date()).isoformat()
-        rows.append({"date": d, "kind": "资产", "title": f"购入 · {a.name}", "amount": -round(float(a.purchase_price), 2), "note": a.note, "ref_type": "asset", "ref_id": a.id, "ref_parent_id": None})
+        rows.append({"date": d, "kind": "资产", "title": f"购入 · {a.name}", "amount": -round(cash_paid, 2), "note": a.note, "ref_type": "asset", "ref_id": a.id, "ref_parent_id": None})
     # 投资转入/转出（现金账户视角）
-    invs = db.query(InvestmentAccount).filter(InvestmentAccount.cash_account_id == account_id, InvestmentAccount.user_id == user_id).all()
-    if invs:
-        inv_ids = [x.id for x in invs]
-        inv_map = {x.id: x.name for x in invs}
-        for f in db.query(InvestmentFlow).filter(InvestmentFlow.investment_account_id.in_(inv_ids), InvestmentFlow.user_id == user_id).all():
+    inv_map = {
+        x.id: x for x in db.query(InvestmentAccount).filter(InvestmentAccount.user_id == user_id).all()
+    }
+    if inv_map:
+        for f in db.query(InvestmentFlow).filter(
+            InvestmentFlow.investment_account_id.in_(list(inv_map)), InvestmentFlow.user_id == user_id
+        ).all():
+            inv = inv_map.get(f.investment_account_id)
+            # 归属账户优先用「本笔现金账户快照」；存量旧数据无快照时回退到投资账户当前关联。
+            # 若用当前关联反推，改过关联现金账户后历史流水会被整体重新归属 → 对账失衡。
+            owner = f.cash_account_id or (inv.cash_account_id if inv else None)
+            if owner != account_id:
+                continue
             rows.append({
                 "date": f.date.isoformat(), "kind": "投资",
-                "title": f"{f.type} · {inv_map.get(f.investment_account_id, '投资')}",
+                "title": f"{f.type} · {inv.name if inv else '投资'}",
                 "amount": -round(float(f.amount), 2) if f.type == "转入" else round(float(f.amount), 2),
                 "note": f.note,
                 "ref_type": "investment_flow", "ref_id": f.id,

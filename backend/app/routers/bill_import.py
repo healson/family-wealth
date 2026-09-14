@@ -89,11 +89,15 @@ def _read_rows(text: str):
 
 
 def _find_col(row, *keywords):
-    """按关键词在表头行中定位列索引"""
-    for i, cell in enumerate(row):
-        cell = str(cell).strip()
-        for kw in keywords:
-            if kw in cell:
+    """按关键词在表头行中定位列索引。
+
+    注意：关键词优先级高于列顺序——必须先把所有关键词按优先级扫一遍，
+    否则「交易类型」列（微信账单第 2 列）会抢在「收/支」列前面被命中，
+    导致收入行被误判为支出。
+    """
+    for kw in keywords:
+        for i, cell in enumerate(row):
+            if kw in str(cell).strip():
                 return i
     return -1
 
@@ -131,7 +135,11 @@ def _smart_parse(text: str, platform: str):
         # 判定收支类型
         ttype = "支出"
         if col_type != -1 and col_type < len(r):
-            tcell = str(r[col_type])
+            tcell = str(r[col_type]).strip()
+            # 「不计收支」= 余额宝/零钱通申赎、账户互转、还信用卡等内部资金移动，
+            # 不属于家庭收入或支出；若当作支出导入会凭空扣减账户余额并虚增支出统计。
+            if "不计" in tcell:
+                continue
             if "收" in tcell and "支" not in tcell:
                 ttype = "收入"
             elif "退款" in tcell or "返还" in tcell or "转入" in tcell:

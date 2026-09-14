@@ -76,9 +76,23 @@ def update_financial(account_id: int, body: FinancialUpdate, db: Session = Depen
 @router.delete("/{account_id}")
 def delete_financial(account_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     account = _get_owned(db, account_id, user.id)
-    db.delete(account)
+    # 先回滚该账户全部转入/转出对现金账户的影响，再删除流水与账户。
+    # 否则现金账户的钱早已被扣/被加，而流水记录消失，余额对账会永久失衡。
+    flows = db.query(InvestmentFlow).filter(
+        InvestmentFlow.investment_account_id == account.id,
+        InvestmentFlow.user_id == user.id,
+    ).all()
+    for f in flows:
+        # 逐笔按其「现金账户快照」回滚：中途换过关联现金账户时，各笔要退回各自当初进出的账户
+        cash_id = f.cash_account_id or account.cash_account_id
+        if f.type == "转入":  # 当初：现金 − / 投资 + → 回滚：现金 +
+            apply_account_delta(db, cash_id, float(f.amount))
+        else:  # 当初：现金 + / 投资 − → 回滚：现金 −
+            apply_account_delta(db, cash_id, -float(f.amount))
+        db.delete(f)
+    db.delete(account)  # 日盈亏记录由 ORM 级联（pnl_records）删除
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "message": f"已删除投资账户，并回滚 {len(flows)} 笔资金流水对现金账户的影响"}
 
 
 # ---------- 转入/转出资金流水（强关联现金账户） ----------
@@ -101,6 +115,7 @@ def create_flow(account_id: int, body: InvestmentFlowCreate, db: Session = Depen
         raise HTTPException(status_code=400, detail="请先为该投资账户指定关联现金账户（资金来源）")
     flow = InvestmentFlow(
         investment_account_id=account.id, user_id=user.id,
+        cash_account_id=account.cash_account_id,
         type=body.type, amount=float(body.amount), date=body.date, note=body.note,
     )
     db.add(flow)
@@ -126,12 +141,13 @@ def delete_flow(account_id: int, flow_id: int, db: Session = Depends(get_db), us
     ).first()
     if flow is None:
         raise HTTPException(status_code=404, detail="资金流水不存在")
-    # 反向回滚：现金账户与投资账户余额
+    # 反向回滚：现金账户与投资账户余额（现金账户取本笔的账户快照，中途换过关联账户也能退回原账户）
+    cash_id = flow.cash_account_id or account.cash_account_id
     if flow.type == "转入":
-        apply_account_delta(db, account.cash_account_id, float(flow.amount))
+        apply_account_delta(db, cash_id, float(flow.amount))
         account.balance = float(account.balance or 0) - float(flow.amount)
     else:
-        apply_account_delta(db, account.cash_account_id, -float(flow.amount))
+        apply_account_delta(db, cash_id, -float(flow.amount))
         account.balance = float(account.balance or 0) + float(flow.amount)
     db.delete(flow)
     db.commit()

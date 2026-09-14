@@ -12,16 +12,23 @@ WEEKDAY_NAMES = ["周一", "周二", "周三", "周四", "周五", "周六", "�
 
 
 def calc_first_next(item: ScheduledTransaction) -> date:
-    """从 start_date 开始计算首个执行日"""
+    """从 start_date 开始计算首个执行日（保证不早于 start_date）"""
     if item.frequency == "weekly":
         d = item.start_date
         while d.weekday() != item.day:
             d += timedelta(days=1)
         return d
     if item.frequency == "yearly":
-        return date(item.start_date.year, item.yearly_month or 1, min(item.day, 28))
+        d = date(item.start_date.year, item.yearly_month or 1, min(item.day, 28))
+        # 本年该日已过 → 顺延到下一年；否则创建任务时会立刻补记一笔「生效前」的收支并扣款
+        if d < item.start_date:
+            d = date(item.start_date.year + 1, item.yearly_month or 1, min(item.day, 28))
+        return d
     # monthly
-    return date(item.start_date.year, item.start_date.month, min(item.day, 28))
+    d = date(item.start_date.year, item.start_date.month, min(item.day, 28))
+    if d < item.start_date:
+        d = calc_next(item, d)
+    return d
 
 
 def calc_next(item: ScheduledTransaction, last: date) -> date:

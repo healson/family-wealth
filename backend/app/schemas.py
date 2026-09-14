@@ -5,7 +5,16 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ORMModel(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    """所有「出参」模型基类。
+
+    `validate_assignment=True` 是关键防护：Pydantic 默认**赋值不校验**，把原始
+    ORM 对象直接挂到字段上（如 `out.payments = loan.payments`）不会报错，字段里
+    就留着 ORM 对象；序列化时 `Numeric` 列的 Decimal 绕过 `float` 声明，接口会
+    吐出 `"amount": "50.00"` 这种字符串并伴随 serializer warning。开启赋值校验后
+    同类写法会当场被强制转换（或直接报错），不再静默产出错误类型。
+    """
+
+    model_config = ConfigDict(from_attributes=True, validate_assignment=True)
 
 
 # ---------- 认证 ----------
@@ -286,13 +295,22 @@ class LoanCreate(BaseModel):
 
 
 class LoanUpdate(BaseModel):
+    """借款编辑入参。
+
+    两处刻意限制（v1.7.8）：
+    - **无 `type`**：类型决定资金方向（借出扣款 / 借入入账），属已发生的历史事实，不可改；
+    - **无 `status`**：结清状态由「本金 − 已收/已还」服务端派生，不接受外部写入，避免状态与金额脱钩。
+    `extra="forbid"` 让多余字段直接报 422 —— 此前是静默丢弃，前端会误以为「保存成功」。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
     counterparty: Optional[str] = None
     amount: Optional[float] = None
     date: Optional[DateType] = None
     due_date: Optional[DateType] = None
     account_id: Optional[int] = None
     note: Optional[str] = None
-    status: Optional[str] = None
 
 
 class LoanPaymentCreate(BaseModel):
@@ -359,6 +377,7 @@ class InvestmentFlowCreate(BaseModel):
 class InvestmentFlowOut(ORMModel):
     id: int
     investment_account_id: int
+    cash_account_id: Optional[int] = None  # 本笔资金实际进出的现金账户（账户快照，改关联后仍可追溯）
     type: str
     amount: float
     date: date

@@ -25,6 +25,7 @@ from .models import (
     User,
 )
 from .auth import SECRET_KEY, JWT_ALGORITHM
+from .utils import apply_txn_balance
 
 # ---------------- 工具定义 ----------------
 TOOLS = [
@@ -91,17 +92,18 @@ TOOLS = [
     },
     {
         "name": "add_transaction",
-        "description": "新增一笔收支记录",
+        "description": "新增一笔收支记录（必须指定 account_id，与页面「记一笔」一致：收入自动加账户余额、支出自动减账户余额）",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "type": {"type": "string", "description": "收入或支出"},
                 "amount": {"type": "number", "description": "金额（元）"},
+                "account_id": {"type": "integer", "description": "现金账户ID（必填，可先用 list_accounts 查询），收支将自动增减该账户余额"},
                 "category": {"type": "string", "description": "分类名，如 餐饮/交通，可省略"},
                 "date": {"type": "string", "description": "日期 YYYY-MM-DD，默认今天"},
                 "note": {"type": "string", "description": "备注"},
             },
-            "required": ["type", "amount"],
+            "required": ["type", "amount", "account_id"],
         },
     },
 ]
@@ -197,9 +199,21 @@ def _tool_query_transactions(db, uid, keyword=None, type=None, start=None, end=N
              "分类": t.category.name if t.category else None, "备注": t.note} for t in q.all()]
 
 
-def _tool_add_transaction(db, uid, type, amount, category=None, date=None, note=None):
+def _tool_add_transaction(db, uid, type, amount, account_id=None, category=None, date=None, note=None):
     if type not in ("收入", "支出"):
         return {"error": "type 必须为 收入 或 支出"}
+    if float(amount or 0) <= 0:
+        return {"error": "金额必须大于 0"}
+    # 与 REST 接口一致：收支必须关联现金账户并联动余额，否则会产生「不守恒」的幽灵收支
+    if not account_id:
+        accounts = db.query(Account).filter(Account.user_id == uid).all()
+        return {
+            "error": "必须指定 account_id：收支需与现金账户强关联（收入加余额/支出减余额）",
+            "可用账户": [{"id": a.id, "名称": a.name, "余额": float(a.balance)} for a in accounts],
+        }
+    account = db.query(Account).filter(Account.id == account_id, Account.user_id == uid).first()
+    if account is None:
+        return {"error": f"账户 {account_id} 不存在或不属于当前账号"}
     d = date and date.fromisoformat(date) or datetime.now().date()
     cat_id = None
     if category:
@@ -209,10 +223,14 @@ def _tool_add_transaction(db, uid, type, amount, category=None, date=None, note=
             db.add(cat)
             db.flush()
         cat_id = cat.id
-    t = Transaction(user_id=uid, type=type, amount=float(amount), category_id=cat_id, date=d, note=note)
+    t = Transaction(user_id=uid, type=type, amount=float(amount), category_id=cat_id,
+                    date=d, account_id=account.id, note=note)
     db.add(t)
+    db.flush()
+    apply_txn_balance(db, t, 1)  # 收入 + / 支出 −，同步账户余额
     db.commit()
-    return {"ok": True, "id": t.id, "日期": str(d), "类型": type, "金额": float(amount)}
+    return {"ok": True, "id": t.id, "日期": str(d), "类型": type, "金额": float(amount),
+            "账户": account.name, "账户余额": float(account.balance)}
 
 
 TOOL_FUNCS = {

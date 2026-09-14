@@ -44,6 +44,7 @@ def init_db(db: Session) -> bool:
     migrate_legacy_schema(db)
     if "policy_payments" not in tables_before:
         _backfill_policy_payments(db)  # 本次升级新增缴费记录表：为存量保单补一条历史缴费记录
+    sync_loan_status(db)  # 借款结清状态统一由「本金 − 已收/已还」派生，顺带校正历史矛盾数据
 
     admin = db.query(User).filter(User.username == "admin").first()
     if admin is None:
@@ -58,6 +59,27 @@ def init_db(db: Session) -> bool:
     return False
 
 
+def sync_loan_status(db: Session) -> int:
+    """幂等校正借款结清状态（v1.7.8 起）。
+
+    状态唯一由「本金 − 已收/已还」派生。历史版本允许外部直接写 `status`，且改金额后
+    不重算，会留下「remaining > 0 却标已结清」这类自相矛盾的数据。每次启动校正一次，
+    重复执行无副作用，返回被修正的条数。
+    """
+    from .models import Loan
+
+    fixed = 0
+    for loan in db.query(Loan).all():
+        paid = sum(float(p.amount) for p in loan.payments)
+        want = "已结清" if paid >= float(loan.amount) - 0.001 else "未结清"
+        if loan.status != want:
+            loan.status = want
+            fixed += 1
+    if fixed:
+        db.commit()
+    return fixed
+
+
 def _backfill_policy_payments(db: Session):
     """升级新增 policy_payments 表时：为存量保单补一条历史缴费记录。
     v1.3/v1.4 在创建保单时已从账户扣减保费，补记录保证余额对账与资金流水一致；
@@ -69,6 +91,8 @@ def _backfill_policy_payments(db: Session):
     for p in policies:
         db.add(PolicyPayment(
             user_id=p.user_id, policy_id=p.id,
+            # 补齐的这笔历史保费当初就是从保单的缴费账户扣的，带上账户快照保持流向可追溯
+            account_id=p.account_id,
             amount=float(p.premium),
             date=(p.last_paid_date or p.created_at.date()),
             note="历史缴费（升级补齐）",
@@ -113,7 +137,7 @@ def migrate_user_id_column(db: Session):
 
 # 各版本资金强关联新增的列（SQLite：create_all 只建新表、不给旧表加列，旧库升级必须显式 ALTER 补齐）
 _STRONG_LINK_COLUMNS = [
-    ("accounts", "initial_balance", "NUMERIC(18,2) DEFAULT 0", True),  # (表, 列, DDL, 是否需要回填=当前余额)
+    ("accounts", "initial_balance", "NUMERIC(18,2) DEFAULT 0", True),  # (表, 列, DDL, 回填规则)
     ("accounts", "bucket", "VARCHAR(20) DEFAULT 'emergency'", False),  # 资金用途：应急/稳健/长期
     ("investment_accounts", "bucket", "VARCHAR(20) DEFAULT 'long_term'", False),
     ("assets", "account_id", "INTEGER", False),
@@ -122,7 +146,25 @@ _STRONG_LINK_COLUMNS = [
     ("investment_accounts", "cash_account_id", "INTEGER", False),
     ("loans", "account_id", "INTEGER", False),
     ("loan_payments", "account_id", "INTEGER", False),
+    # 缴费/资金流水自带账户快照：历史数据按父记录当时的关联回填（一次性，之后各笔独立留痕）
+    ("policy_payments", "account_id", "INTEGER", False),
+    ("investment_flows", "cash_account_id", "INTEGER", False),
 ]
+
+# 新增「流水自带账户」列后的一次性回填（仅在该列刚创建时执行）：
+# 旧数据没有账户留痕，只能按父记录当前关联尽力回填，避免升级后对账立刻报差异。
+_FLOW_SNAPSHOT_BACKFILL = {
+    ("policy_payments", "account_id"): (
+        "UPDATE policy_payments SET account_id = ("
+        "  SELECT p.account_id FROM insurance_policies p WHERE p.id = policy_payments.policy_id"
+        ") WHERE account_id IS NULL"
+    ),
+    ("investment_flows", "cash_account_id"): (
+        "UPDATE investment_flows SET cash_account_id = ("
+        "  SELECT i.cash_account_id FROM investment_accounts i WHERE i.id = investment_flows.investment_account_id"
+        ") WHERE cash_account_id IS NULL"
+    ),
+}
 
 
 def ensure_strong_link_columns(db: Session):
@@ -142,6 +184,9 @@ def ensure_strong_link_columns(db: Session):
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"))
                 if backfill and table in tables:
                     conn.execute(text(f"UPDATE {table} SET {col} = balance"))
+                snapshot_sql = _FLOW_SNAPSHOT_BACKFILL.get((table, col))
+                if snapshot_sql:
+                    conn.execute(text(snapshot_sql))
 
 
 def migrate_legacy_schema(db: Session):
@@ -309,5 +354,16 @@ def seed_demo(db: Session):
                 category_id=cat_map[ename].id, date=m_date - timedelta(days=j),
                 account_id=acc_salary.id if j % 2 == 0 else acc_credit.id, note=ename,
             ))
+
+    # ---------- 演示数据自洽：期初基准 = 当前余额 − 全部资金流水 ----------
+    # 演示数据里的余额是「设定的当前余额」，而流水是直接写入的（未逐笔联动）。
+    # 若不回填 initial_balance，全新安装后总览「余额对账」会全部标红（应有 ≠ 实际），
+    # 让用户误以为系统记错账。此处按账户实际流水反推期初基准，保证对账一致。
+    from .utils import collect_account_flows
+
+    db.flush()
+    for a in (acc_salary, acc_cash, acc_fd, acc_credit):
+        flow_sum = sum(float(f["amount"]) for f in collect_account_flows(db, a.id, 1))
+        a.initial_balance = round(float(a.balance) - flow_sum, 2)
 
     db.commit()

@@ -1,6 +1,7 @@
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from ..auth import get_current_user
@@ -14,6 +15,25 @@ router = APIRouter(
     tags=["借款管理"],
     dependencies=[Depends(get_current_user)],
 )
+
+# 结清判定容差（与前端 remaining 展示保持同一口径）
+_EPS = 0.001
+
+
+def sync_loan_status(db, loan: Loan) -> str:
+    """结清状态唯一派生：本金 − 已收/已还 ≤ 0 即「已结清」。
+
+    状态不再由外部写入，也不再与金额各算一套 —— 此前「改金额后状态不重算」会让
+    借款页封面（按 status 过滤）与总览（按 remaining 判定）两个口径互相矛盾。
+    """
+    paid = float(
+        db.query(func.coalesce(func.sum(LoanPayment.amount), 0))
+        .filter(LoanPayment.loan_id == loan.id)
+        .scalar()
+        or 0
+    )
+    loan.status = "已结清" if paid >= float(loan.amount) - _EPS else "未结清"
+    return loan.status
 
 
 def _apply_loan_balance(db, loan, sign=1):
@@ -38,7 +58,11 @@ def _to_out(loan: Loan, db: Session) -> LoanOut:
     out.paid_amount = round(paid, 2)
     out.remaining = round(float(loan.amount) - paid, 2)
     out.overdue = out.remaining > 0 and loan.due_date is not None and loan.due_date < date.today()
-    out.payments = loan.payments
+    # 必须逐条 model_validate，不能直接 `out.payments = loan.payments`：
+    # 赋值不触发校验，字段里会留下原始 ORM 对象，序列化时 `Numeric` 的 Decimal
+    # 绕过 float 声明 → 接口返回 `"amount": "50.00"`（字符串）并伴随
+    # Pydantic serializer warning。逐条校验后与 `amount`/`paid_amount` 同为数字。
+    out.payments = [LoanPaymentOut.model_validate(p) for p in loan.payments]
     return out
 
 
@@ -51,8 +75,19 @@ def _get_owned(db: Session, loan_id: int, user_id: int) -> Loan:
 
 @router.get("", response_model=list[LoanOut])
 def list_loans(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """借款列表：**未结清在前**，同组内按借款日期、录入顺序倒序。
+
+    不能用 `Loan.status.asc()` —— 那是字符串排序，中文「已结清」的「已」（U+5DF2）
+    编码小于「未结清」的「未」（U+672A），已结清会被顶到列表最前，未结清的活账
+    反而压在下面。这里用显式 case 把「已结清」记为 1、其余（含历史遗留状态值）
+    记为 0，语义清晰且不受字符集编码影响。
+    """
     loans = db.query(Loan).filter(Loan.user_id == user.id)\
-        .order_by(Loan.status.asc(), Loan.date.desc(), Loan.id.desc()).all()
+        .order_by(
+            case((Loan.status == "已结清", 1), else_=0).asc(),
+            Loan.date.desc(),
+            Loan.id.desc(),
+        ).all()
     return [_to_out(l, db) for l in loans]
 
 
@@ -66,6 +101,7 @@ def create_loan(body: LoanCreate, db: Session = Depends(get_db), user: User = De
     db.add(loan)
     db.flush()
     _apply_loan_balance(db, loan, 1)  # 借出扣账户、借入加账户
+    sync_loan_status(db, loan)  # 新建必定未结清，走同一派生入口
     db.commit()
     db.refresh(loan)
     return _to_out(loan, db)
@@ -73,14 +109,22 @@ def create_loan(body: LoanCreate, db: Session = Depends(get_db), user: User = De
 
 @router.put("/{loan_id}", response_model=LoanOut)
 def update_loan(loan_id: int, body: LoanUpdate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """编辑借款。
+
+    注意：**类型不可修改**（`LoanUpdate` 无 `type` 字段），改类型会得到 422 而不是「静默无效」。
+    结清状态在应用新金额后由 `sync_loan_status` 重算，保证与 `remaining` 始终一致。
+    """
     loan = _get_owned(db, loan_id, user.id)
     data = body.model_dump(exclude_unset=True)
+    if "amount" in data and data["amount"] is not None and float(data["amount"]) <= 0:
+        raise HTTPException(status_code=400, detail="金额必须大于 0")
     # 先回滚旧影响，再应用新影响
     _apply_loan_balance(db, loan, -1)
     for k, v in data.items():
         setattr(loan, k, v)
     db.flush()
     _apply_loan_balance(db, loan, 1)
+    sync_loan_status(db, loan)  # 改金额后重算结清状态（此前会残留旧状态）
     db.commit()
     db.refresh(loan)
     return _to_out(loan, db)
@@ -136,12 +180,8 @@ def add_payment(loan_id: int, body: LoanPaymentCreate, db: Session = Depends(get
     db.add(payment)
     db.flush()
     _apply_payment_balance(db, payment, loan, 1)  # 借出收款入账 / 借入还款出账
-    # 全部还清自动结清
-    paid = sum(float(p.amount) for p in loan.payments) + float(body.amount)
-    if paid >= float(loan.amount) - 0.001:
-        loan.status = "已结清"
-    else:
-        loan.status = "未结清"
+    db.flush()
+    sync_loan_status(db, loan)  # 全部还清自动结清（唯一派生入口）
     db.commit()
     db.refresh(loan)
     return _to_out(loan, db)
@@ -157,9 +197,8 @@ def delete_payment(loan_id: int, payment_id: int, db: Session = Depends(get_db),
         raise HTTPException(status_code=404, detail="还款记录不存在")
     _apply_payment_balance(db, payment, loan, -1)  # 反向回滚余额
     db.delete(payment)
-    # 删除后按剩余金额回置状态
-    paid = sum(float(p.amount) for p in loan.payments if p.id != payment_id)
-    loan.status = "已结清" if paid >= float(loan.amount) - 0.001 else "未结清"
+    db.flush()  # 先落盘删除，派生状态才不会把已删这笔算进去
+    sync_loan_status(db, loan)
     db.commit()
     db.refresh(loan)
     return _to_out(loan, db)

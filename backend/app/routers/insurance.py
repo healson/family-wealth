@@ -73,11 +73,24 @@ def update_policy(policy_id: int, body: PolicyUpdate, db: Session = Depends(get_
 @router.delete("/{policy_id}")
 def delete_policy(policy_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     policy = _get_owned(db, policy_id, user.id)
-    # 缴费记录是已发生的支出，删除保单不退回余额；一并删除缴费记录
-    db.query(PolicyPayment).filter(PolicyPayment.policy_id == policy.id).delete()
+    # 删除保单 = 撤销该保单及其全部缴费影响：先按缴费账户逐笔退回保费，再删除缴费记录与保单。
+    # 若不退回，账户余额已被扣减而缴费流水消失，余额对账（期初+流水=应有余额）会永久失衡。
+    payments = db.query(PolicyPayment).filter(
+        PolicyPayment.policy_id == policy.id, PolicyPayment.user_id == user.id
+    ).all()
+    refund = 0.0
+    for p in payments:
+        # 逐笔按其「缴费账户快照」退回：中途换过缴费账户时，各笔要退回各自当初出账的账户，
+        # 否则新旧账户对账会同时失衡（退款跑到新账户、旧账户却已扣除）。
+        target = p.account_id or policy.account_id
+        if target:
+            apply_account_delta(db, target, float(p.amount))
+            refund += float(p.amount)
+        db.delete(p)
     db.delete(policy)
     db.commit()
-    return {"ok": True}
+    msg = f"已删除保单，并退回保费 {refund:.2f} 元（余额已恢复）" if refund else "已删除保单"
+    return {"ok": True, "message": msg}
 
 
 @router.post("/{policy_id}/pay", response_model=PolicyOut)
@@ -90,7 +103,10 @@ def pay_policy(policy_id: int, db: Session = Depends(get_db), user: User = Depen
         raise HTTPException(status_code=400, detail="保费为 0，无需缴费")
     today = date.today()
     apply_account_delta(db, policy.account_id, -float(policy.premium))
-    db.add(PolicyPayment(user_id=user.id, policy_id=policy.id, amount=float(policy.premium), date=today, note="保单缴费"))
+    db.add(PolicyPayment(
+        user_id=user.id, policy_id=policy.id, account_id=policy.account_id,
+        amount=float(policy.premium), date=today, note="保单缴费",
+    ))
     policy.last_paid_date = today
     if policy.pay_method == "趸交":
         policy.next_due_date = None

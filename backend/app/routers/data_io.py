@@ -197,5 +197,12 @@ def import_data(body: ImportPayload, db: Session = Depends(get_db), user: User =
         except TypeError:
             continue
 
+    # 备份文件可能来自旧版本，其中的借款 status 是写入时的快照，未必与金额一致；
+    # 导入后立即按「本金 − 已收/已还」重算，避免把矛盾状态带进新库。
+    from ..seed import sync_loan_status
+
+    db.flush()
+    sync_loan_status(db)
+
     db.commit()
     return {"ok": True, "message": "数据导入成功（覆盖当前账号）"}

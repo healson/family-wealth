@@ -12,7 +12,10 @@ from ..models import (
     InvestmentFlow,
     Loan,
     LoanPayment,
+    PolicyPayment,
+    ScheduledTransaction,
     Transaction,
+    TransactionTemplate,
     Transfer,
     User,
 )
@@ -23,7 +26,7 @@ from ..schemas import (
     AccountTransactionOut,
     AccountUpdate,
 )
-from ..utils import coerce_money, collect_account_flows
+from ..utils import apply_account_delta, coerce_money, collect_account_flows
 
 router = APIRouter(
     prefix="/api/accounts",
@@ -69,10 +72,47 @@ def update_account(account_id: int, body: AccountUpdate, db: Session = Depends(g
 
 @router.delete("/{account_id}")
 def delete_account(account_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """删除现金账户（含连带清理，避免破坏资金守恒与余额对账）。
+
+    1) 转账：把已发生的转账影响从**对方账户**退回/扣回，再删除转账记录
+       （否则对方账户余额已变、流水却消失，对账会出现永久性差异）；
+    2) 其余模块：解除对该账户的引用（置空），避免留下指向已删账户的悬挂关联。
+       收支记录本身保留（历史事实保留在收入/支出统计中），仅解除账户关联。
+    """
     account = _get_owned(db, account_id, user.id)
-    db.delete(account)
+
+    # 1) 撤销转账对对方账户的影响
+    transfers = db.query(Transfer).filter(
+        Transfer.user_id == user.id,
+        (Transfer.from_account_id == account.id) | (Transfer.to_account_id == account.id),
+    ).all()
+    for t in transfers:
+        amount = float(t.amount)
+        if t.from_account_id == account.id and t.to_account_id != account.id:
+            apply_account_delta(db, t.to_account_id, -amount)  # 对方当初 + → 扣回
+        elif t.to_account_id == account.id and t.from_account_id != account.id:
+            apply_account_delta(db, t.from_account_id, amount)  # 对方当初 − → 退回
+        db.delete(t)
+
+    # 2) 解除其余模块对账户的引用
+    db.query(Transaction).filter(Transaction.account_id == account.id).update({Transaction.account_id: None})
+    db.query(Loan).filter(Loan.account_id == account.id).update({Loan.account_id: None})
+    db.query(LoanPayment).filter(LoanPayment.account_id == account.id).update({LoanPayment.account_id: None})
+    db.query(Asset).filter(Asset.account_id == account.id).update({Asset.account_id: None})
+    db.query(InsurancePolicy).filter(InsurancePolicy.account_id == account.id).update({InsurancePolicy.account_id: None})
+    # 保单缴费 / 投资流水的「账户快照」也要解引用，避免留下指向已删账户的悬挂归属
+    db.query(PolicyPayment).filter(PolicyPayment.account_id == account.id).update({PolicyPayment.account_id: None})
+    db.query(InvestmentFlow).filter(InvestmentFlow.cash_account_id == account.id).update({InvestmentFlow.cash_account_id: None})
+    db.query(InvestmentAccount).filter(InvestmentAccount.cash_account_id == account.id)\
+        .update({InvestmentAccount.cash_account_id: None})
+    db.query(TransactionTemplate).filter(TransactionTemplate.account_id == account.id)\
+        .update({TransactionTemplate.account_id: None})
+    db.query(ScheduledTransaction).filter(ScheduledTransaction.account_id == account.id)\
+        .update({ScheduledTransaction.account_id: None})
+
+    db.delete(account)  # 账户存取流水由 ORM 级联删除
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "message": f"已删除账户「{account.name}」并清理关联（撤销 {len(transfers)} 笔转账对对方账户的影响）"}
 
 
 def _flow_type(f: dict) -> str:

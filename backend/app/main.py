@@ -17,7 +17,7 @@ from .routers import (
 from .seed import init_db, seed_demo
 
 STATIC_DIR = os.environ.get("STATIC_DIR", "/app/static")
-VERSION = "1.7.5"
+VERSION = "1.7.9"
 
 
 @asynccontextmanager

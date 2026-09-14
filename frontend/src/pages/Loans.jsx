@@ -33,10 +33,12 @@ export default function Loans() {
     api.get('/accounts').then((res) => setAccounts(res.data)).catch(() => {})
   }, [])
 
+  // 口径与财富总览统一：只看 remaining。status 是后端由 remaining 同源派生的展示字段，
+  // 不再作为统计判据（此前两处各按一套判据，会出现同一条记录两处金额不一致）。
   const stats = useMemo(() => {
     let receivable = 0, payable = 0, overdue = 0
     list.forEach((l) => {
-      if (l.status === '未结清' && l.remaining > 0) {
+      if (l.remaining > 0) {
         if (l.type === '借出') receivable += l.remaining
         else payable += l.remaining
         if (l.overdue) overdue += 1
@@ -47,8 +49,8 @@ export default function Loans() {
 
   const filtered = list.filter((l) => {
     if (filter === '借出' || filter === '借入') return l.type === filter
-    if (filter === '未结清') return l.status === '未结清'
-    if (filter === '已结清') return l.status === '已结清'
+    if (filter === '未结清') return l.remaining > 0
+    if (filter === '已结清') return l.remaining <= 0
     return true
   })
 
@@ -88,6 +90,10 @@ export default function Loans() {
       date: values.date.format('YYYY-MM-DD'),
       due_date: values.due_date ? values.due_date.format('YYYY-MM-DD') : null,
     }
+    // 「类型」决定资金方向（借出扣款 / 借入入账），属已发生的历史事实，不允许修改：
+    // 编辑态不提交 type（禁用的表单项仍会被 validateFields 带出来，必须显式删掉），
+    // 后端 LoanUpdate 也不接受该字段，多传会直接报错而非静默无效。
+    if (editing) delete payload.type
     try {
       let id
       if (editing) { await api.put(`/loans/${editing.id}`, payload); id = editing.id }
@@ -217,7 +223,7 @@ export default function Loans() {
               { title: '金额', dataIndex: 'amount', width: 100, align: 'right', render: (v) => <b>{fmtMoney(v)}</b> },
               {
                 title: '剩余', dataIndex: 'remaining', width: 100, align: 'right',
-                render: (v, l) => (l.status === '已结清' ? <Tag color="default">已结清</Tag> : (
+                render: (v, l) => (l.remaining <= 0 ? <Tag color="default">已结清</Tag> : (
                   <span style={{ fontWeight: 600, color: l.overdue ? '#fa8c16' : 'rgba(0,0,0,0.85)' }}>{fmtMoney(v)}</span>
                 )),
               },
@@ -231,7 +237,7 @@ export default function Loans() {
                 title: '操作', width: 150, fixed: 'right',
                 render: (_, l) => (
                   <span>
-                    {l.status === '未结清' && <Button size="small" type="link" onClick={() => openPay(l)}>{l.type === '借出' ? '收款' : '还款'}</Button>}
+                    {l.remaining > 0 && <Button size="small" type="link" onClick={() => openPay(l)}>{l.type === '借出' ? '收款' : '还款'}</Button>}
                     <Button size="small" type="link" onClick={() => openEdit(l)}>编辑</Button>
                     <Popconfirm title="删除该借款记录？" onConfirm={() => remove(l.id)}>
                       <Button size="small" type="link" danger>删除</Button>
@@ -253,10 +259,18 @@ export default function Loans() {
       ]} />
 
       {/* 新增/编辑借款 */}
-      <Modal title={editing ? '编辑借款' : '新增借款'} open={modalOpen} onCancel={() => setModalOpen(false)} onOk={submit} forceRender>
+      <Modal title={editing ? '编辑借款' : '新增借款'} open={modalOpen} onCancel={() => setModalOpen(false)} onOk={submit} destroyOnClose>
         <Form form={form} layout="vertical" initialValues={{ type: '借出' }}>
-          <Form.Item name="type" label="类型" rules={[{ required: true }]}>
-            <Segmented options={[{ label: '借出（应收）', value: '借出' }, { label: '借入（应付）', value: '借入' }]} />
+          <Form.Item
+            name="type"
+            label="类型"
+            rules={[{ required: true }]}
+            extra={editing ? '类型决定资金方向（借出扣款 / 借入入账），不可修改。如需变更，请删除后重新新增。' : undefined}
+          >
+            <Segmented
+              disabled={!!editing}
+              options={[{ label: '借出（应收）', value: '借出' }, { label: '借入（应付）', value: '借入' }]}
+            />
           </Form.Item>
           <Form.Item name="counterparty" label="对方（借款人/出借人）" rules={[{ required: true, message: '必填' }]}>
             <Input placeholder="如：张三" />

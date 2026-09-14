@@ -11,7 +11,7 @@ from ..schemas import (
     ValuationCreate,
     ValuationOut,
 )
-from ..utils import apply_account_delta, coerce_money
+from ..utils import apply_account_delta, asset_cash_paid, coerce_money
 
 router = APIRouter(
     prefix="/api/assets",
@@ -21,10 +21,16 @@ router = APIRouter(
 
 
 def _apply_asset_balance(db, asset, sign=1):
-    """固定资产购入联动余额：购买价（全款部分）从付款账户支出（−）"""
-    if not asset.account_id or not asset.purchase_price:
+    """固定资产购入联动余额：购入价「全款部分」（购入价 − 贷款余额）从付款账户支出（−）。
+
+    贷款部分由银行直接支付给卖方、不经家庭账户，故不从账户扣款。
+    """
+    if not asset.account_id:
         return
-    apply_account_delta(db, asset.account_id, -float(asset.purchase_price) * sign)
+    cash_paid = asset_cash_paid(asset)
+    if cash_paid <= 0:
+        return
+    apply_account_delta(db, asset.account_id, -cash_paid * sign)
 
 
 def _to_out(asset: Asset) -> AssetOut:

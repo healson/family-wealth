@@ -274,27 +274,37 @@ export default function Dashboard() {
             {scope === 'financial' ? (
               <>
                 <div className="stat-card" style={{ flex: 1 }}>
-                  <div className="stat-label">金融总资产</div>
+                  <div className="stat-label">金融总资产（进）</div>
                   <div className="stat-value" style={{ color: '#c41d1d' }}>{fmtMoney(data.financial_assets)}</div>
-                  <div className="stat-sub">含借出应收款 {fmtMoney(data.receivable)}</div>
+                  <div className="stat-sub">现金 + 金融投资 + 借出应收</div>
                 </div>
                 <div className="stat-card" style={{ flex: 1 }}>
-                  <div className="stat-label">金融净资产</div>
+                  <div className="stat-label">金融负债（出）</div>
+                  <div className="stat-value" style={{ color: '#389e0d' }}>{fmtMoney(data.financial_liabilities)}</div>
+                  <div className="stat-sub">借入应付款</div>
+                </div>
+                <div className="stat-card" style={{ flex: 1 }}>
+                  <div className="stat-label">金融净资产（净）</div>
                   <div className="stat-value">{fmtMoney(data.financial_net)}</div>
-                  <div className="stat-sub">金融负债 {fmtMoney(data.financial_liabilities)}（借入应付款）</div>
+                  <div className="stat-sub">进 − 出</div>
                 </div>
               </>
             ) : (
               <>
                 <div className="stat-card" style={{ flex: 1 }}>
-                  <div className="stat-label">家庭总资产</div>
+                  <div className="stat-label">家庭总资产（含固定资产）</div>
                   <div className="stat-value" style={{ color: '#c41d1d' }}>{fmtMoney(data.total_assets)}</div>
                   <div className="stat-sub">含借出应收款 {fmtMoney(data.receivable)}</div>
                 </div>
                 <div className="stat-card" style={{ flex: 1 }}>
+                  <div className="stat-label">家庭总负债</div>
+                  <div className="stat-value" style={{ color: '#389e0d' }}>{fmtMoney(data.total_liabilities)}</div>
+                  <div className="stat-sub">固定资产贷款 + 借入应付款</div>
+                </div>
+                <div className="stat-card" style={{ flex: 1 }}>
                   <div className="stat-label">家庭净资产</div>
                   <div className="stat-value">{fmtMoney(data.net_worth)}</div>
-                  <div className="stat-sub">负债 {fmtMoney(data.total_liabilities)}（含借入应付款）</div>
+                  <div className="stat-sub">总资产 − 总负债（保单为保障不计入）</div>
                 </div>
               </>
             )}

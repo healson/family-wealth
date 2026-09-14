@@ -130,6 +130,12 @@ class PolicyPayment(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), default=1, index=True)
     policy_id: Mapped[int] = mapped_column(ForeignKey("insurance_policies.id", ondelete="CASCADE"), index=True)
+    # 缴费账户快照：记录本笔保费实际从哪个账户扣款。
+    # 必须自带（不可用 policy.account_id 反推）——否则一旦改保单缴费账户，
+    # 历史缴费会被整体重新归属到新账户，导致新旧账户余额对账同时失衡。
+    account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     amount: Mapped[float] = mapped_column(Numeric(18, 2))
     date: Mapped[datetime] = mapped_column(Date)
     note: Mapped[str | None] = mapped_column(String(200), nullable=True)
@@ -203,6 +209,12 @@ class InvestmentFlow(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), default=1, index=True)
     investment_account_id: Mapped[int] = mapped_column(ForeignKey("investment_accounts.id", ondelete="CASCADE"), index=True)
+    # 关联现金账户快照：记录本笔资金实际进出的现金账户。
+    # 必须自带（不可用 investment_account.cash_account_id 反推）——否则一旦改关联现金账户，
+    # 历史流水会被整体重新归属到新账户，导致新旧账户余额对账同时失衡。
+    cash_account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     type: Mapped[str] = mapped_column(String(10))  # 转入/转出
     amount: Mapped[float] = mapped_column(Numeric(18, 2))
     date: Mapped[datetime] = mapped_column(Date)

@@ -15,7 +15,7 @@ from ..schemas import (
     TemplateCreate,
     TemplateOut,
 )
-from ..utils import coerce_money
+from ..utils import apply_txn_balance, coerce_money
 
 router = APIRouter(
     prefix="/api",
@@ -161,6 +161,8 @@ def run_now(item_id: int, db: Session = Depends(get_db), user: User = Depends(ge
         date=today, note=note[:200],
     )
     db.add(txn)
+    db.flush()
+    apply_txn_balance(db, txn, 1)  # 与调度器 run_due 保持一致：立即执行同样联动账户余额
     item.last_run_date = today
     item.next_run_date = calc_next(item, today)
     if item.end_date and item.next_run_date > item.end_date:
