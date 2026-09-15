@@ -1,7 +1,35 @@
+# ==============================================================================
+# family-wealth 部署配置 —— 从 GHCR 拉取预构建镜像
+# ==============================================================================
+# 【首次部署】镜像包默认是私有的，不登录直接 pull 会报 unauthorized（认证问题，不是网络问题）
+#   1) 造令牌：GitHub → Settings → Developer settings → Personal access tokens
+#              → Tokens (classic) → Generate new token (classic) → 只勾【read:packages】
+#   2) 登录：  echo "ghp_你的PAT" | docker login ghcr.io -u healson --password-stdin
+#      · 凭据记在「执行 docker 的那个用户」名下；以 root 跑 → /root/.docker/config.json，
+#        换成别的用户跑 compose 会再次 401，需用该用户重登
+#      · 用 --password-stdin，避免 PAT 进 shell history / ps
+#   3) 启动：  docker compose pull && docker compose up -d
+#   4) 自查：  curl http://127.0.0.1:8000/api/health      # 应回当前版本号
+#              uname -m                                  # 需 x86_64；aarch64 会报 no matching manifest
+#
+#   ✱ 不想在机器上存 PAT：把包设为 public 即可免登录（镜像内容将对所有人可见）
+#       https://github.com/users/healson/packages/container/family-wealth/settings
+#       → Danger Zone → Change visibility → Public
+#   ✱ 判定 unauthorized 是不是认证问题：私有包在 token 端点就 401 ——
+#       curl -s "https://ghcr.io/token?scope=repository:healson/family-wealth:pull&service=ghcr.io"
+#
+# 【升级】（数据在 ./data 里，不会丢）
+#   docker compose pull && docker compose up -d
+#   ⚠️ up -d 不会自动拉新镜像（本地已有就不拉）→ 漏写 pull 会静默跑旧版本
+# ==============================================================================
+
 services:
   family-wealth:
     # 默认从 GitHub Container Registry 拉取预构建镜像
-    # （push main 后 GitHub Actions 自动构建并推送，NAS 无需 node/docker build 环境）
+    # （push main 后 GitHub Actions 自动构建并推送，无需 node/docker build 环境）
+    # 🔴 本机首次部署必须先登录，否则 pull 报 unauthorized：
+    #     echo "<有 read:packages 权限的 PAT>" | docker login ghcr.io -u healson --password-stdin
+    # 想固定版本改用 :1.7.9；想精确回溯用 @sha256:<digest>
     image: ghcr.io/healson/family-wealth:latest
     container_name: family-wealth
     restart: unless-stopped
