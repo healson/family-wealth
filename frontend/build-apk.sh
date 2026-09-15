@@ -37,12 +37,22 @@ echo "✅ Android SDK: ${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
 # ---------- 构建前端（注入 NAS API 地址） ----------
 echo ""
 echo "▶ 构建前端（API 地址 = $NAS_URL）..."
+# vite.config.js 里 emptyOutDir=false（避免 Windows 文件占用导致构建失败），
+# 代价是旧 hash 产物会在 dist/ 里累积、并被一并打进 APK。这里的先清空保证产物干净。
+rm -rf dist
 VITE_API_BASE="$NAS_URL" npm run build
 
 # ---------- 同步 web 资源到安卓工程 ----------
 echo ""
 echo "▶ 同步资源到安卓工程..."
-npx cap sync android
+# Windows 上 `cap sync/copy` 有概率在清理插件文件时报错（universalify remove 异常）。
+# 失败不影响打包：回退为手动同步 web 资源即可（等价于 cap copy 的产物拷贝部分，
+# 插件配置 capacitor.config.json / capacitor.plugins.json 已在工程内且未变更）。
+if ! npx cap sync android; then
+  echo "⚠ cap sync 失败，回退为手动同步 web 资源（Windows 已知问题）..."
+  rm -rf android/app/src/main/assets/public
+  cp -r dist android/app/src/main/assets/public
+fi
 
 # ---------- 打包 APK ----------
 echo ""
