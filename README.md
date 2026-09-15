@@ -319,6 +319,18 @@ docker compose logs -f | tail -50
 
 本项目前端为 React（Vite），已集成 **Capacitor**，可一键打包成安卓 APK（应用壳，界面与 Web 完全一致）。
 
+### 方式零：直接下载已构建的安装包（最省事）
+
+**不想自己搭 Android 构建环境**，直接取仓库 [`apk/`](./apk/) 目录里的现成安装包：
+
+```
+apk/family-wealth-app-v1.7.9.apk
+```
+
+下载后覆盖安装即可（同包名同签名，保留数据）。校验方式、包信息与体积约定见 [`apk/README.md`](./apk/README.md)。
+
+> ⚠️ 二进制入库后 git 历史不可回收，此后每版约 +12.6 MB；若想控制仓库体积，可改为只保留最新一版，或改用 GitHub Release 附件发布。
+
 ### 方式一：一键脚本（需 JDK 21 + Android SDK）
 
 ```bash
