@@ -40,6 +40,15 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
+          # latest 只在「分支推送」时更新。
+          # 为什么必须显式写：metadata-action 的 type=semver 在默认 flavor=latest=auto 下，
+          # 遇到正式版 tag（如 1.7.9）会**自动追加 latest**——这与下面 raw/sha 两条上的
+          # enable={{is_default_branch}} 无关（实测 tag 推送时那两条确实未生效，latest 却
+          # 仍被写入了）。后果是：若将来给**旧提交**补打标签，latest 会被悄悄回退到旧版本，
+          # NAS 下次 `docker compose pull` 就静默降级。这里显式按 ref 类型分流，让
+          # 「:X.Y.Z 归标签、:latest 归 main」互不干扰。
+          flavor: |
+            latest=${{ github.ref_type == 'branch' }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}

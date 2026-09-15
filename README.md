@@ -84,7 +84,7 @@ docker compose down && docker compose build --no-cache && docker compose up -d  
 
 ### 方式二：从 GitHub Container Registry 直接拉取（免 NAS 构建，推荐 ⭐）
 
-镜像由 GitHub Actions 在**每次 push main** 时自动构建并推送到 `ghcr.io/healson/family-wealth:latest`，NAS 上**无需 node / docker build 环境**，直接拉取运行：
+镜像由 GitHub Actions 在**每次 push main（或打 `v*.*.*` 标签）**时自动构建并推送到 `ghcr.io/healson/family-wealth`，NAS 上**无需 node / docker build 环境**，直接拉取运行：
 
 ```bash
 # 1. 登录 GHCR（私有仓库必须登录；密码处用有 read:packages 权限的 PAT）
@@ -99,16 +99,19 @@ docker compose up -d
 ```
 
 - **升级**：`docker compose pull && docker compose up -d` 即可拉到最新镜像（无需 --no-cache 重建）
+  - ⚠️ `docker compose up -d` **本身不会拉新镜像**（本地已有就不再拉），必须带上 `pull`，否则会静默继续跑旧版本
+  - 若 compose 里锁定的是版本号（如 `:1.7.9` 而非 `:latest`），升级时先把 `image:` 那行的版本号改掉，再 `pull && up -d`
 - **私有镜像可见性**：首次构建后到 GitHub → 个人头像 → **Packages → family-wealth → Settings** 确认可见性为 **Private**（与私有仓库一致；若显示 Public 请改为 Private）
 - **想本地构建**（NAS 不能访问 GitHub / 想改源码现场构建）：用 `docker compose -f docker-compose.local.yml up -d --build`（本地构建版，对应原 tar.gz 部署流程）
 
 > **镜像标签怎么选**：
 > - `:latest` —— 每次 push main 自动更新（`docker compose pull` 默认拉这个）
 > - `:sha-<短提交>` —— 每次构建随附（如 `:sha-ef458f2`），用于精确回溯到某次提交
-> - `:X.Y.Z` —— **需要打 `v*.*.*` 标签才会产出**：`git tag v1.7.9 && git push origin v1.7.9` 会额外触发一次构建，生成 `ghcr.io/healson/family-wealth:1.7.9`（供版本固定的部署使用）
+> - `:X.Y.Z` —— **需要打 `v*.*.*` 标签才会产出**：发布新版本时执行 `git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z`，会额外触发一次构建并生成 `ghcr.io/healson/family-wealth:X.Y.Z`（供版本固定部署）。tag 推送**只产出该版本号、不改动 `:latest`**（workflow 里用 `flavor: latest=${{ github.ref_type == 'branch' }}` 显式关掉了 tag 事件的 latest），`:latest` 只跟随 main。
 >
-> 目前远端只有前两类；若在 NAS 上拉 `:1.7.9` 报 `manifest unknown`，就是该版本标签还没打过。
+> 目前远端已打过 `v1.7.9` → 可用 `ghcr.io/healson/family-wealth:1.7.9`；更早的版本没有标签，若拉那些版本号会报 `manifest unknown`。
 > 想锁定某次构建，也可直接按 digest 拉取：`ghcr.io/healson/family-wealth@sha256:<digest>`。
+> ⚠️ tag 推送使用的是**该 tag 所在提交里的 workflow**，所以对旧提交补打的标签仍会按当时的旧规则构建。
 
 ## 🔄 升级现有版本（旧版 → v1.6.2）
 
