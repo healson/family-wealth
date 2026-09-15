@@ -102,7 +102,13 @@ docker compose up -d
 - **私有镜像可见性**：首次构建后到 GitHub → 个人头像 → **Packages → family-wealth → Settings** 确认可见性为 **Private**（与私有仓库一致；若显示 Public 请改为 Private）
 - **想本地构建**（NAS 不能访问 GitHub / 想改源码现场构建）：用 `docker compose -f docker-compose.local.yml up -d --build`（本地构建版，对应原 tar.gz 部署流程）
 
-> 镜像地址恒为 `ghcr.io/healson/family-wealth:latest`；也可按 git 标签拉取具体版本（如 `:1.7.5`）。
+> **镜像标签怎么选**：
+> - `:latest` —— 每次 push main 自动更新（`docker compose pull` 默认拉这个）
+> - `:sha-<短提交>` —— 每次构建随附（如 `:sha-ef458f2`），用于精确回溯到某次提交
+> - `:X.Y.Z` —— **需要打 `v*.*.*` 标签才会产出**：`git tag v1.7.9 && git push origin v1.7.9` 会额外触发一次构建，生成 `ghcr.io/healson/family-wealth:1.7.9`（供版本固定的部署使用）
+>
+> 目前远端只有前两类；若在 NAS 上拉 `:1.7.9` 报 `manifest unknown`，就是该版本标签还没打过。
+> 想锁定某次构建，也可直接按 digest 拉取：`ghcr.io/healson/family-wealth@sha256:<digest>`。
 
 ## 🔄 升级现有版本（旧版 → v1.6.2）
 
