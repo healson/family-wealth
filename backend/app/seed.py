@@ -35,7 +35,11 @@ def init_db(db: Session) -> bool:
     """确保默认用户存在，返回是否全新初始化"""
     from sqlalchemy import inspect
 
+    from . import schema_meta
     from .database import Base, engine
+
+    # 迁移前先读库内记录的 schema 版本，供哨兵判定「库比代码新」还是「库比代码旧」
+    db_version_before = schema_meta.read_db_version(engine)
 
     tables_before = set(inspect(engine).get_table_names())
     Base.metadata.create_all(bind=engine)
@@ -45,6 +49,14 @@ def init_db(db: Session) -> bool:
     if "policy_payments" not in tables_before:
         _backfill_policy_payments(db)  # 本次升级新增缴费记录表：为存量保单补一条历史缴费记录
     sync_loan_status(db)  # 借款结清状态统一由「本金 − 已收/已还」派生，顺带校正历史矛盾数据
+
+    # schema 版本哨兵：判定 + 校验「声明的资金快照列是否真的都在库里」+ 写入当前版本。
+    # 放在迁移之后，才能区分「本次刚迁移完」与「库比代码新」。
+    schema_meta.check_and_record(
+        engine, db_version_before,
+        [(t, c) for t, c, _ddl, _bf in _STRONG_LINK_COLUMNS],
+    )
+    schema_meta.write_db_version(engine)
 
     admin = db.query(User).filter(User.username == "admin").first()
     if admin is None:

@@ -70,8 +70,8 @@ if main_py:
         check("VERSION 形如 x.y.z", bool(SEMVER_RE.match(version)), version)
         check(
             "/api/health 直接返回该常量（不是另写一份）",
-            'return {"status": "ok", "version": VERSION}' in main_py,
-            "health() 未直接引用 VERSION",
+            re.search(r'"version"\s*:\s*VERSION', main_py) is not None,
+            "health 端点未直接引用 VERSION（可能又写了一份版本号字面量）",
         )
 
 if not version:
