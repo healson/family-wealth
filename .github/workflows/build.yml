@@ -3,6 +3,11 @@ name: Build and Push to GHCR
 # 每次 push 到 main（或打 v*.*.* 标签）自动在 GitHub 云端构建并推送 Docker 镜像到
 # GitHub Container Registry (GHCR)，NAS 上直接 `docker compose pull` 即可，无需本地 build。
 # 推送使用 GitHub 自带的 GITHUB_TOKEN，不需要任何手动配置的密钥/密码。
+#
+# 流水线分两段，测试是构建的**前置门禁**（needs: test）：
+#   1) test       —— 后端回归测试（约 179 个检查点）+ 结构校验（版本号 / compose / 打包）
+#   2) build-push —— 只有 test 全绿才会构建推送镜像
+# 这样「:latest 跟随 main」才是安全的：主干上任何未通过的改动都不会变成可拉取的镜像。
 
 on:
   push:
@@ -18,8 +23,61 @@ concurrency:
   group: ghcr-${{ github.ref }}
   cancel-in-progress: true
 
+# 与容器内的 TZ 保持一致（compose 里设的是 Asia/Shanghai）。
+# 测试脚本内部也各自 os.environ["TZ"]="Asia/Shanghai"，但那只在 Linux 上生效、
+# 且需要 tzset；在 job 层统一设定更确定，同时让 CI 环境更贴近生产。
+env:
+  TZ: Asia/Shanghai
+
 jobs:
+  # ---------------------------------------------------------------------------
+  # 1) 门禁：回归测试 + 结构校验
+  # ---------------------------------------------------------------------------
+  test:
+    name: 回归测试与结构校验（构建门禁）
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt pyyaml
+
+      - name: 后端回归测试（资金守恒 / 结清派生 / 出参契约 / 全接口冒烟 / 迁移幂等 / 更新检查）
+        # 每个脚本自带 DATA_DIR/STATIC_DIR 指向临时目录并预建 static/assets，
+        # 不依赖仓库内任何状态；失败即非零退出，直接掐断本次构建。
+        working-directory: backend/tests
+        run: |
+          set -euo pipefail
+          for f in test_migrations.py test_loan_status.py test_balance_audit.py \
+                   test_loan_api_contract.py test_api_smoke.py \
+                   test_system_update_check.py; do
+            echo "::group::$f"
+            python "$f"
+            echo "::endgroup::"
+          done
+
+      - name: 结构校验（版本号单一事实源 / compose 不变量 / 打包产物）
+        run: |
+          set -euo pipefail
+          python check/check_version.py
+          python check/check_compose.py
+          python check/check_tar.py
+
+  # ---------------------------------------------------------------------------
+  # 2) 构建推送（仅在门禁通过后执行）
+  # ---------------------------------------------------------------------------
   build-and-push:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -40,17 +98,27 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
-          # latest 只在「分支推送」时更新。
-          # 为什么必须显式写：metadata-action 的 type=semver 在默认 flavor=latest=auto 下，
-          # 遇到正式版 tag（如 1.7.9）会**自动追加 latest**——这与下面 raw/sha 两条上的
-          # enable={{is_default_branch}} 无关（实测 tag 推送时那两条确实未生效，latest 却
-          # 仍被写入了）。后果是：若将来给**旧提交**补打标签，latest 会被悄悄回退到旧版本，
-          # NAS 下次 `docker compose pull` 就静默降级。这里显式按 ref 类型分流，让
-          # 「:X.Y.Z 归标签、:latest 归 main」互不干扰。
+          # 标签归属规则（三条互不干扰，各自由 enable 条件精确控制）：
+          #
+          #   :latest  —— 仅**分支推送**（主干最新，持续交付用）
+          #   :stable  —— 仅**v*.*.* 标签**（最近一次正式发布，NAS 生产环境用）
+          #   :X.Y.Z   —— 仅**v*.*.* 标签**（可精确回溯 / 回滚到指定版本）
+          #   :sha-xxx —— 仅分支推送（按提交定位）
+          #
+          # 为什么必须显式写 flavor：metadata-action 的 type=semver 在默认
+          # flavor=latest=auto 下，遇到正式版 tag（如 1.7.9）会**自动追加 latest**
+          # ——这与下面 raw/sha 两条上的 enable={{is_default_branch}} 无关（实测
+          # tag 推送时那两条确实未生效，latest 却仍被写入了）。后果是：若将来给
+          # **旧提交**补打标签，latest 会被悄悄回退到旧版本，NAS 下次
+          # `docker compose pull` 就静默降级。这里显式按 ref 类型分流。
+          #
+          # 另：`:stable` 只由标签事件写入，所以「打标签」这个动作本身就是
+          # 「把一个经过测试的版本推进到生产」的开关，主干开发不会污染它。
           flavor: |
             latest=${{ github.ref_type == 'branch' }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=stable,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=semver,pattern={{version}}
             type=sha,prefix=sha-,enable={{is_default_branch}}
 

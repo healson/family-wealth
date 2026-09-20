@@ -21,16 +21,27 @@
 # 【升级】（数据在 ./data 里，不会丢）
 #   docker compose pull && docker compose up -d
 #   ⚠️ up -d 不会自动拉新镜像（本地已有就不拉）→ 漏写 pull 会静默跑旧版本
+#
+# 【镜像标签怎么选】四个标签互不干扰，各自由 CI 的 enable 条件精确控制：
+#   :stable   ← 只由【打 v*.*.* 标签】写入 = 最近一次正式发布   ← 本文件用这个（生产推荐）
+#   :X.Y.Z    ← 只由【打 v*.*.* 标签】写入 = 可精确回溯 / 回滚
+#   :latest   ← 只由【push main】写入      = 主干最新（尝鲜用，未走发布流程）
+#   :sha-xxx  ← 只由【push main】写入      = 按提交定位
+#   ⚠️ CI 在构建镜像前会先跑测试门禁（后端回归测试 + 版本/compose/打包结构校验），
+#      测试不过就不产出镜像 —— 所以 :latest 也是「测试通过的主干」，但仍是未发布的功能。
+#   ⚠️ 按不存在的版本号拉会报 manifest unknown（早期版本未打标签，没有 :X.Y.Z）。
 # ==============================================================================
 
 services:
   family-wealth:
-    # 默认从 GitHub Container Registry 拉取预构建镜像
-    # （push main 后 GitHub Actions 自动构建并推送，无需 node/docker build 环境）
     # 🔴 本机首次部署必须先登录，否则 pull 报 unauthorized：
     #     echo "<有 read:packages 权限的 PAT>" | docker login ghcr.io -u healson --password-stdin
-    # 想固定版本改用 :1.7.9；想精确回溯用 @sha256:<digest>
-    image: ghcr.io/healson/family-wealth:latest
+    #
+    # 默认用 :stable —— 跟随「最近一次正式发布」，主干开发不会悄悄影响生产。
+    # 想固定到具体版本（升级要手动改这行，最稳）：改 :1.8.0
+    # 想随时尝鲜主干最新（有风险）：改 :latest
+    # 想精确回溯（不可变）：@sha256:<digest>
+    image: ghcr.io/healson/family-wealth:stable
     container_name: family-wealth
     restart: unless-stopped
     ports:
@@ -49,6 +60,14 @@ services:
       # ---- MCP 鉴权令牌（可选，供外部 AI Agent 连接）----
       # - MCP_TOKEN=change-me        # 设置后，外部 Agent 需带此令牌访问 /mcp
       # - MCP_USERNAME=admin         # stdio 模式默认操作的账号
+      # ---- 更新检查（可选，只为「设置管理 → 系统更新」的检查按钮服务）----
+      # 不配置也能正常用，只是点「检查更新」会提示「未配置来源」。
+      # 该功能**只读**：不拉镜像、不重启容器，升级始终手动执行。
+      # 二选一即可：
+      # - UPDATE_CHECK_MANIFEST_URL=https://example.com/family-wealth-version.json
+      #      公开可访问的 JSON，内容形如 {"version":"1.8.0"}；镜像私有又不想放令牌时用这个
+      # - GITHUB_TOKEN=ghp_xxx
+      #      有 repo 权限的 PAT，用于查询 GitHub Releases（本仓库私有，匿名查不到）
     volumes:
       - ./data:/data                 # SQLite 数据库持久化目录（重要！勿删）
     healthcheck:

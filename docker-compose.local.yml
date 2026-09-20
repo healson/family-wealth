@@ -21,6 +21,14 @@ services:
       - AI_API_KEY=                  # 如 sk-xxx（本地 Ollama 可不填）
       - AI_BASE_URL=https://api.openai.com/v1
       - AI_MODEL=gpt-4o-mini
+      # ---- 更新检查（可选，只为「设置管理 → 系统更新」的检查按钮服务）----
+      # 不配置也能正常用，只是点「检查更新」会提示「未配置来源」。
+      # 该功能**只读**：不拉镜像、不重启容器，升级始终手动执行。
+      # 二选一即可：
+      # - UPDATE_CHECK_MANIFEST_URL=https://example.com/family-wealth-version.json
+      #      公开可访问的 JSON，内容形如 {"version":"1.8.0"}；镜像私有又不想放令牌时用这个
+      # - GITHUB_TOKEN=ghp_xxx
+      #      有 repo 权限的 PAT，用于查询 GitHub Releases（本仓库私有，匿名查不到）
     volumes:
       - ./data:/data                 # SQLite 数据库持久化目录（重要！勿删）
     healthcheck:
