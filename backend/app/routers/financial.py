@@ -16,7 +16,7 @@ from ..schemas import (
     PnlCreate,
     PnlOut,
 )
-from ..utils import apply_account_delta, coerce_money
+from ..utils import apply_account_delta, archive_deleted, coerce_money
 
 router = APIRouter(
     prefix="/api/financial",
@@ -89,7 +89,15 @@ def delete_financial(account_id: int, db: Session = Depends(get_db), user: User 
             apply_account_delta(db, cash_id, float(f.amount))
         else:  # 当初：现金 + / 投资 − → 回滚：现金 −
             apply_account_delta(db, cash_id, -float(f.amount))
+        archive_deleted(db, f, {"cash_account_id_used": cash_id,
+                                "reversal": "现金账户已按快照回滚"})  # 删除前归档，供事后找回（只写不读）
         db.delete(f)
+    archive_deleted(db, account, {
+        "account_name": account.name,
+        "balance_at_delete": float(account.balance or 0),
+        "flows_rolled_back": len(flows),
+        "note": "日盈亏记录随账户级联删除；转入/转出对现金账户的影响已按快照回滚",
+    })
     db.delete(account)  # 日盈亏记录由 ORM 级联（pnl_records）删除
     db.commit()
     return {"ok": True, "message": f"已删除投资账户，并回滚 {len(flows)} 笔资金流水对现金账户的影响"}
@@ -149,6 +157,7 @@ def delete_flow(account_id: int, flow_id: int, db: Session = Depends(get_db), us
     else:
         apply_account_delta(db, cash_id, -float(flow.amount))
         account.balance = float(account.balance or 0) + float(flow.amount)
+    archive_deleted(db, flow)  # 删除前归档，供事后找回（只写不读）
     db.delete(flow)
     db.commit()
     return {"ok": True}
@@ -208,6 +217,7 @@ def delete_pnl(account_id: int, pnl_id: int, db: Session = Depends(get_db), user
     ).first()
     if record is None:
         raise HTTPException(status_code=404, detail="盈亏记录不存在")
+    archive_deleted(db, record)  # 删除前归档，供事后找回（只写不读）
     db.delete(record)
     db.commit()
     return {"ok": True}

@@ -11,7 +11,7 @@ from ..schemas import (
     ValuationCreate,
     ValuationOut,
 )
-from ..utils import apply_account_delta, asset_cash_paid, coerce_money
+from ..utils import apply_account_delta, archive_deleted, asset_cash_paid, coerce_money
 
 router = APIRouter(
     prefix="/api/assets",
@@ -83,6 +83,7 @@ def update_asset(asset_id: int, body: AssetUpdate, db: Session = Depends(get_db)
 def delete_asset(asset_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     asset = _get_owned_asset(db, asset_id, user.id)
     _apply_asset_balance(db, asset, -1)  # 反向恢复余额
+    archive_deleted(db, asset)  # 删除前归档，供事后找回（只写不读）
     db.delete(asset)
     db.commit()
     return {"ok": True}
@@ -117,6 +118,7 @@ def delete_valuation(asset_id: int, valuation_id: int, db: Session = Depends(get
     ).first()
     if v is None:
         raise HTTPException(status_code=404, detail="估值记录不存在")
+    archive_deleted(db, v)  # 删除前归档，供事后找回（只写不读）
     db.delete(v)
     db.commit()
     return {"ok": True}

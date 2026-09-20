@@ -5,6 +5,7 @@ from ..auth import get_current_user
 from ..database import get_db
 from ..models import CustomOption, User
 from ..schemas import OptionCreate, OptionOut
+from ..utils import archive_deleted
 
 router = APIRouter(
     prefix="/api/options",
@@ -43,6 +44,7 @@ def delete_option(option_id: int, db: Session = Depends(get_db), user: User = De
     option = db.query(CustomOption).filter(CustomOption.id == option_id, CustomOption.user_id == user.id).first()
     if option is None:
         raise HTTPException(status_code=404, detail="选项不存在")
+    archive_deleted(db, option)  # 删除前归档，供事后找回（只写不读）
     db.delete(option)
     db.commit()
     return {"ok": True}

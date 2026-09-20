@@ -5,7 +5,7 @@ from ..auth import get_current_user
 from ..database import get_db
 from ..models import Account, Transfer, User
 from ..schemas import TransferCreate, TransferOut
-from ..utils import coerce_money
+from ..utils import archive_deleted, coerce_money
 
 router = APIRouter(
     prefix="/api/transfers",
@@ -59,6 +59,7 @@ def delete_transfer(transfer_id: int, db: Session = Depends(get_db), user: User 
     amount = float(transfer.amount)
     from_account.balance = float(from_account.balance or 0) + amount
     to_account.balance = float(to_account.balance or 0) - amount
+    archive_deleted(db, transfer)  # 删除前归档，供事后找回（只写不读）
     db.delete(transfer)
     db.commit()
     return {"ok": True}

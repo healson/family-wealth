@@ -15,7 +15,7 @@ from ..schemas import (
     TemplateCreate,
     TemplateOut,
 )
-from ..utils import apply_txn_balance, coerce_money
+from ..utils import apply_txn_balance, archive_deleted, coerce_money
 
 router = APIRouter(
     prefix="/api",
@@ -78,6 +78,7 @@ def delete_template(template_id: int, db: Session = Depends(get_db), user: User 
     ).first()
     if t is None:
         raise HTTPException(status_code=404, detail="模板不存在")
+    archive_deleted(db, t)  # 删除前归档，供事后找回（只写不读）
     db.delete(t)
     db.commit()
     return {"ok": True}
@@ -138,6 +139,7 @@ def delete_scheduled(item_id: int, db: Session = Depends(get_db), user: User = D
     ).first()
     if item is None:
         raise HTTPException(status_code=404, detail="定时任务不存在")
+    archive_deleted(db, item)  # 删除前归档，供事后找回（只写不读）
     db.delete(item)
     db.commit()
     return {"ok": True}

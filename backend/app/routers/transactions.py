@@ -14,7 +14,7 @@ from ..schemas import (
     TransactionOut,
     TransactionUpdate,
 )
-from ..utils import apply_txn_balance, coerce_money
+from ..utils import apply_txn_balance, archive_deleted, coerce_money
 
 router = APIRouter(
     prefix="/api/transactions",
@@ -63,6 +63,7 @@ def delete_category(category_id: int, db: Session = Depends(get_db), user: User 
 
     db.query(TransactionTemplate).filter(TransactionTemplate.category_id == category.id).update({TransactionTemplate.category_id: None})
     db.query(ScheduledTransaction).filter(ScheduledTransaction.category_id == category.id).update({ScheduledTransaction.category_id: None})
+    archive_deleted(db, category)  # 删除前归档，供事后找回（只写不读）
     db.delete(category)
     db.commit()
     return {"ok": True, "message": f"分类「{category.name}」已删除，相关记录已置为未分类"}
@@ -130,6 +131,7 @@ def delete_transaction(txn_id: int, db: Session = Depends(get_db), user: User = 
     if txn is None:
         raise HTTPException(status_code=404, detail="记录不存在")
     apply_txn_balance(db, txn, -1)  # 反向恢复余额
+    archive_deleted(db, txn)  # 删除前归档，供事后找回（只写不读）
     db.delete(txn)
     db.commit()
     return {"ok": True}

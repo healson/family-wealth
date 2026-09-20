@@ -12,7 +12,7 @@ from ..schemas import (
     ReminderRuleOut,
     ReminderRuleUpdate,
 )
-from ..utils import days_until
+from ..utils import archive_deleted, days_until
 
 router = APIRouter(
     prefix="/api/reminders",
@@ -106,6 +106,7 @@ def delete_rule(rule_id: int, db: Session = Depends(get_db), user: User = Depend
     rule = db.query(ReminderRule).filter(ReminderRule.id == rule_id, ReminderRule.user_id == user.id).first()
     if rule is None:
         raise HTTPException(status_code=404, detail="提醒规则不存在")
+    archive_deleted(db, rule)  # 删除前归档，供事后找回（只写不读）
     db.delete(rule)
     db.commit()
     return {"ok": True}

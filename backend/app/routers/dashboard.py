@@ -21,7 +21,7 @@ from ..models import (
     Transaction,
     User,
 )
-from ..utils import asset_cash_paid, collect_account_flows, last_n_months
+from ..utils import asset_cash_paid, last_n_months, reconcile_accounts
 
 router = APIRouter(
     prefix="/api/dashboard",
@@ -328,16 +328,9 @@ def summary(
     cash_flow = {"inflow": inflow, "outflow": outflow, "net": round(inflow["total"] - outflow["total"], 2)}
 
     # ---- 余额对账校验：应有余额 = 期初基准 + 全部资金流水，与实际余额对比 ----
-    reconciliation = []
-    for a in db.query(Account).filter(Account.user_id == uid).all():
-        total_flow = round(sum(float(f["amount"]) for f in collect_account_flows(db, a.id, uid)), 2)
-        expected = round(float(a.initial_balance or 0) + total_flow, 2)
-        actual = round(float(a.balance or 0), 2)
-        reconciliation.append({
-            "id": a.id, "name": a.name,
-            "balance": actual, "expected": expected, "diff": round(actual - expected, 2),
-        })
-    reconciliation.sort(key=lambda x: abs(x["diff"]), reverse=True)
+    # 计算逻辑已抽到 utils.reconcile_accounts（v1.9.0）—— 启动自检与 /api/health
+    # 也调同一个函数，避免两处各写一遍导致对账口径漂移。
+    reconciliation = reconcile_accounts(db, uid)
 
     return {
         "total_assets": round(total_assets, 2),

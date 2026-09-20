@@ -416,3 +416,30 @@ class ReminderDismissal(Base):
         # 同一用户对（规则+记录+到期日）只记一次
         UniqueConstraint("user_id", "rule_id", "module", "record_id", "due_date", name="uq_reminder_dismissal"),
     )
+
+
+class DeletedRecord(Base):
+    """删除归档（回收站）：删记录前把原样存一份，供事后找回。
+
+    ⚠️ 设计要点：**只写不读** —— 不参与任何查询、统计与余额对账。
+
+    这是刻意选的方案。另一种做法是软删除（在业务表上加 `deleted_at`），但它会和
+    **资金守恒**打架：`utils.collect_account_flows` 有 9 个来源，软删除后每一处
+    都必须记得加 `deleted_at IS NULL`，**漏一处就静默对账失衡** —— 那恰恰是本项目
+    最要紧的不变量。放在独立表里，则余额逻辑一行都不用改，9 个来源一个也不用动。
+
+    `payload` 是被删记录自身的全部列（JSON）；`context` 是补充上下文
+    （父记录标识、余额回滚了哪个账户多少金额），方便日后人工还原。
+    """
+
+    __tablename__ = "deleted_records"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), default=1, index=True)
+    module: Mapped[str] = mapped_column(String(40), index=True)  # 原表名，如 policy_payments
+    record_id: Mapped[int | None] = mapped_column(nullable=True)  # 原记录 id（仅作标识，可能被复用）
+    label: Mapped[str] = mapped_column(String(200), default="")  # 人能看懂的一行摘要
+    payload: Mapped[str] = mapped_column(Text)  # 被删记录的全部列（JSON）
+    context: Mapped[str | None] = mapped_column(Text, nullable=True)  # 补充上下文（JSON）
+    deleted_at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)
+

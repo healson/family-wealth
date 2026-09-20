@@ -7,7 +7,7 @@ from ..auth import get_current_user
 from ..database import get_db
 from ..models import InsurancePolicy, PolicyPayment, User
 from ..schemas import PolicyCreate, PolicyOut, PolicyUpdate
-from ..utils import apply_account_delta, coerce_money, days_until
+from ..utils import apply_account_delta, archive_deleted, coerce_money, days_until
 
 router = APIRouter(
     prefix="/api/insurance",
@@ -86,7 +86,13 @@ def delete_policy(policy_id: int, db: Session = Depends(get_db), user: User = De
         if target:
             apply_account_delta(db, target, float(p.amount))
             refund += float(p.amount)
+        archive_deleted(db, p)  # 删除前归档，供事后找回（只写不读）
         db.delete(p)
+    archive_deleted(db, policy, {
+        "refunded_premium": round(refund, 2),
+        "payments_archived": len(payments),
+        "note": "已按各笔缴费账户快照退回保费，账户余额已恢复",
+    })
     db.delete(policy)
     db.commit()
     msg = f"已删除保单，并退回保费 {refund:.2f} 元（余额已恢复）" if refund else "已删除保单"

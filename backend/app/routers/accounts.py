@@ -26,7 +26,7 @@ from ..schemas import (
     AccountTransactionOut,
     AccountUpdate,
 )
-from ..utils import apply_account_delta, coerce_money, collect_account_flows
+from ..utils import apply_account_delta, archive_deleted, coerce_money, collect_account_flows
 
 router = APIRouter(
     prefix="/api/accounts",
@@ -92,6 +92,7 @@ def delete_account(account_id: int, db: Session = Depends(get_db), user: User = 
             apply_account_delta(db, t.to_account_id, -amount)  # 对方当初 + → 扣回
         elif t.to_account_id == account.id and t.from_account_id != account.id:
             apply_account_delta(db, t.from_account_id, amount)  # 对方当初 − → 退回
+        archive_deleted(db, t)  # 删除前归档，供事后找回（只写不读）
         db.delete(t)
 
     # 2) 解除其余模块对账户的引用
@@ -110,6 +111,14 @@ def delete_account(account_id: int, db: Session = Depends(get_db), user: User = 
     db.query(ScheduledTransaction).filter(ScheduledTransaction.account_id == account.id)\
         .update({ScheduledTransaction.account_id: None})
 
+    archive_deleted(db, account, {
+        "account_name": account.name,
+        "type": account.type,
+        "balance_at_delete": float(account.balance or 0),
+        "initial_balance": float(account.initial_balance or 0),
+        "revoked_transfers": len(transfers),
+        "note": "账户存取流水随账户级联删除；其余模块对该账户的引用已置空（那些记录本身保留）",
+    })
     db.delete(account)  # 账户存取流水由 ORM 级联删除
     db.commit()
     return {"ok": True, "message": f"已删除账户「{account.name}」并清理关联（撤销 {len(transfers)} 笔转账对对方账户的影响）"}
@@ -215,6 +224,7 @@ def delete_account_transaction(account_id: int, txn_id: int, db: Session = Depen
     account = _get_owned(db, account_id, user.id)
     delta = -float(txn.amount) if txn.type == "存入" else float(txn.amount)
     account.balance = float(account.balance) + delta
+    archive_deleted(db, txn)  # 删除前归档，供事后找回（只写不读）
     db.delete(txn)
     db.commit()
     return {"ok": True}

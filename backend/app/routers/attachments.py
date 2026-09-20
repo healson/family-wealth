@@ -9,6 +9,7 @@ from ..auth import get_current_user
 from ..database import get_db
 from ..models import Attachment, User
 from ..schemas import AttachmentOut
+from ..utils import archive_deleted
 
 router = APIRouter(
     prefix="/api/attachments",
@@ -137,6 +138,7 @@ def delete_attachment(
             os.remove(path)
     except OSError:
         pass
+    archive_deleted(db, att)  # 删除前归档，供事后找回（只写不读）
     db.delete(att)
     db.commit()
     return {"ok": True}

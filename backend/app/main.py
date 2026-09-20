@@ -1,4 +1,5 @@
 import os
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -8,13 +9,15 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
+from . import backup, health
+
 from .database import SessionLocal, get_db
 
 # 这两个常量必须定义在「导入 routers」之前：
 # routers/system.py 会 `from ..main import VERSION`，若 VERSION 定义在导入之后，
 # 那个导入会拿到一个尚未初始化的模块并抛 ImportError。
 STATIC_DIR = os.environ.get("STATIC_DIR", "/app/static")
-VERSION = "1.8.0"
+VERSION = "1.9.0"
 
 from .routers import (  # noqa: E402  —— 必须在上面的常量之后导入
     accounts, admin, ai, assets, attachments, auth, bill_import, dashboard,
@@ -31,6 +34,8 @@ async def lifespan(app: FastAPI):
         is_fresh = init_db(db)
         if is_fresh and os.environ.get("SEED_DEMO_DATA", "true").lower() == "true":
             seed_demo(db)
+        # 启动自检三件事，都写日志 —— 部署后一眼就能看到「schema 对不对、账平不平、备份在不在」
+        health.startup(db)
     finally:
         db.close()
     # 启动定时交易后台线程 + 首次到期检查
@@ -45,6 +50,11 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     start_scheduler()
+    # 对账缓存后台刷新：让 /api/health 永远只读缓存、永远快
+    # （它被 Docker HEALTHCHECK 每 30 秒打一次，不能每次实时全量对账）
+    threading.Thread(target=health.maintenance_loop, name="health-refresh", daemon=True).start()
+    # 自动备份：每日一份，按日期判重，随附轮转
+    backup.start_scheduler()
     yield
 
 
@@ -88,8 +98,29 @@ app.add_api_route("/mcp/message", mcp_message_endpoint, methods=["POST"], includ
 
 
 @app.get("/api/health")
-def health():
-    return {"status": "ok", "version": VERSION}
+def health_check():
+    """健康检查。
+
+    ⚠️ 这个端点被三处 Docker HEALTHCHECK、登录页与设置页消费，
+       所以有两条规定：
+       1. **HTTP 状态码恒为 200** —— 它是「进程活着」的信号，不能因为
+          「账不平」「备份过期」这类业务状态而变成非 2xx，否则一个财务差异
+          会被误报成服务故障（容器显示 unhealthy、自查命令失败）。
+       2. **只读缓存** —— 对账结果由后台线程按 TTL 刷新（见 app/health.py），
+          这里绝不实时全量计算：HEALTHCHECK 每 30 秒打一次，实时算会变成重负载。
+    业务状态放在返回体字段里：books_balanced / schema_ok / backup_ok。
+    """
+    payload = {"status": "ok", "version": VERSION}
+    db = None
+    try:
+        db = SessionLocal()
+        payload.update(health.fields(db))
+    except Exception as exc:  # noqa: BLE001 —— 健康检查自己绝不能把服务拖垮
+        payload["health_error"] = "%s: %s" % (type(exc).__name__, exc)
+    finally:
+        if db is not None:
+            db.close()
+    return payload
 
 
 # 托管前端静态文件（生产模式：React 构建产物）

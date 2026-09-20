@@ -8,7 +8,7 @@ from ..auth import get_current_user
 from ..database import get_db
 from ..models import Loan, LoanPayment, User
 from ..schemas import LoanCreate, LoanOut, LoanPaymentCreate, LoanPaymentOut, LoanUpdate
-from ..utils import apply_account_delta
+from ..utils import apply_account_delta, archive_deleted
 
 router = APIRouter(
     prefix="/api/loans",
@@ -137,6 +137,12 @@ def delete_loan(loan_id: int, db: Session = Depends(get_db), user: User = Depend
     for p in loan.payments:
         _apply_payment_balance(db, p, loan, -1)
     _apply_loan_balance(db, loan, -1)
+    archive_deleted(db, loan, {
+        "principal": float(loan.amount or 0),
+        "collected": round(sum(float(p.amount) for p in loan.payments), 2),
+        "payments_archived": len(loan.payments),
+        "note": "还款/收款流水与本金对账户的影响已全部回滚",
+    })
     db.delete(loan)
     db.commit()
     return {"ok": True}
@@ -196,6 +202,7 @@ def delete_payment(loan_id: int, payment_id: int, db: Session = Depends(get_db),
     if payment is None:
         raise HTTPException(status_code=404, detail="还款记录不存在")
     _apply_payment_balance(db, payment, loan, -1)  # 反向回滚余额
+    archive_deleted(db, payment)  # 删除前归档，供事后找回（只写不读）
     db.delete(payment)
     db.flush()  # 先落盘删除，派生状态才不会把已删这笔算进去
     sync_loan_status(db, loan)

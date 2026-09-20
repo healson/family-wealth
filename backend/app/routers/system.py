@@ -224,6 +224,10 @@ def update_check(force: bool = Query(False, description="忽略缓存，强制�
 @router.get("/info")
 def system_info():
     """运行环境一览（排查用，不含任何密钥）。"""
+    from .. import backup as backup_mod
+    from .. import health as health_mod
+    from .. import schema_meta
+
     return {
         "version": VERSION,
         "timezone": os.environ.get("TZ") or "(未设置)",
@@ -233,4 +237,40 @@ def system_info():
             or (os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or "").strip()
         ),
         "upgrade_command": _UPGRADE_CMD,
+        # 运行时自检（v1.9.0）
+        "schema": {
+            "code_version": schema_meta.STARTUP_STATUS["code_version"],
+            "db_version": schema_meta.STARTUP_STATUS["db_version"],
+            "status": schema_meta.STARTUP_STATUS["status"],
+            "missing_columns": schema_meta.STARTUP_STATUS["missing_columns"],
+            "message": schema_meta.STARTUP_STATUS["message"],
+        },
+        "backup": backup_mod.status(),
+        "reconcile": health_mod.reconcile_fields(_session()),
     }
+
+
+def _session():
+    from ..database import SessionLocal
+
+    return SessionLocal()
+
+
+@router.post("/health-refresh")
+def health_refresh():
+    """强制重算对账缓存与备份状态（设置页「刷新」按钮用；测试也用它绕过 10 分钟 TTL）。
+
+    刻意不做成 `/api/health?force=1` —— /api/health 是不需要登录的，
+    不能让未认证请求触发全量对账。
+    """
+    from .. import backup as backup_mod
+    from .. import health as health_mod
+
+    db = _session()
+    try:
+        data = health_mod.refresh_reconcile(db, force=True)
+        fields = health_mod.reconcile_fields(db)
+    finally:
+        db.close()
+    backup_mod.verify_latest()
+    return {"ok": True, "reconcile": data, "fields": fields}

@@ -1,34 +1,27 @@
-"""数据导出/导入（JSON 全量备份与恢复，按账号隔离）"""
-from datetime import date, datetime
+# -*- coding: utf-8 -*-
+"""数据导出/导入（JSON 全量备份与恢复，按账号隔离）+ 回收站 + 手动备份触发。
 
-import sqlalchemy
-from fastapi import APIRouter, Depends, HTTPException
+导出的字段形状由 `app/export_data.py` 唯一实现（自动备份也用它），本模块只负责
+HTTP 接口与导入时的外键重建。
+"""
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from ..auth import USER_SCOPED_MODELS, delete_user_data, get_current_user
+from .. import backup
+from ..auth import delete_user_data, get_current_user
 from ..database import get_db
+from ..export_data import (
+    CHILD_MODELS,
+    EXPORT_VERSION,
+    PARENT_MODELS,
+    build_export,
+    convert_cols,
+)
 from ..models import (
-    Account,
-    AccountTransaction,
-    Asset,
-    AssetValuation,
     Attachment,
-    Category,
-    CustomOption,
-    DailyPnl,
-    InsurancePolicy,
-    InvestmentAccount,
-    InvestmentFlow,
-    Loan,
-    LoanPayment,
-    PolicyPayment,
-    ReminderDismissal,
+    DeletedRecord,
     ReminderRule,
-    ScheduledTransaction,
-    Transaction,
-    TransactionTemplate,
-    Transfer,
     User,
 )
 
@@ -38,66 +31,14 @@ router = APIRouter(
     dependencies=[Depends(get_current_user)],
 )
 
-EXPORT_VERSION = 1
 
-# 各表的导出字段与模型映射（依赖顺序：先父表后子表；Account 放最前以便账户外键映射）
-_PARENT_MODELS = [Account, CustomOption, Category, Asset, InsurancePolicy, InvestmentAccount, Loan, TransactionTemplate, ScheduledTransaction]
-_CHILD_MODELS = [InvestmentFlow, PolicyPayment, AssetValuation, AccountTransaction, DailyPnl, Transfer, Transaction, LoanPayment]
-
-
-def _serialize(model_obj):
-    d = {}
-    for col in model_obj.__table__.columns:
-        v = getattr(model_obj, col.name)
-        if isinstance(v, (date, datetime)):
-            v = v.isoformat()
-        d[col.name] = v
-    return d
-
-
-def _convert_cols(model, row: dict):
-    """将字符串形式的日期/时间列转为对应 Python 类型（导入用）"""
-    for col in model.__table__.columns:
-        v = row.get(col.name)
-        if v is None or not isinstance(v, str):
-            continue
-        try:
-            if isinstance(col.type, sqlalchemy.DateTime):
-                row[col.name] = datetime.fromisoformat(v)
-            elif isinstance(col.type, sqlalchemy.Date):
-                row[col.name] = date.fromisoformat(v[:10])
-        except ValueError:
-            pass
-
-
+# ---------------------------------------------------------------------------
+# 导出 / 导入
+# ---------------------------------------------------------------------------
 @router.get("/export")
 def export_data(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """导出当前账号全量数据为 JSON 备份"""
-    data = {
-        "version": EXPORT_VERSION,
-        "exported_at": datetime.now().isoformat(),
-        "username": user.username,
-        "custom_options": [_serialize(o) for o in db.query(CustomOption).filter(CustomOption.user_id == user.id).all()],
-        "categories": [_serialize(c) for c in db.query(Category).filter(Category.user_id == user.id).all()],
-        "assets": [_serialize(a) for a in db.query(Asset).filter(Asset.user_id == user.id).all()],
-        "insurance_policies": [_serialize(p) for p in db.query(InsurancePolicy).filter(InsurancePolicy.user_id == user.id).all()],
-        "accounts": [_serialize(a) for a in db.query(Account).filter(Account.user_id == user.id).all()],
-        "investment_accounts": [_serialize(a) for a in db.query(InvestmentAccount).filter(InvestmentAccount.user_id == user.id).all()],
-        "investment_flows": [_serialize(f) for f in db.query(InvestmentFlow).filter(InvestmentFlow.user_id == user.id).all()],
-        "asset_valuations": [_serialize(v) for v in db.query(AssetValuation).filter(AssetValuation.user_id == user.id).all()],
-        "account_transactions": [_serialize(t) for t in db.query(AccountTransaction).filter(AccountTransaction.user_id == user.id).all()],
-        "daily_pnl": [_serialize(p) for p in db.query(DailyPnl).filter(DailyPnl.user_id == user.id).all()],
-        "transfers": [_serialize(t) for t in db.query(Transfer).filter(Transfer.user_id == user.id).all()],
-        "loans": [_serialize(l) for l in db.query(Loan).filter(Loan.user_id == user.id).all()],
-        "loan_payments": [_serialize(p) for p in db.query(LoanPayment).filter(LoanPayment.user_id == user.id).all()],
-        "policy_payments": [_serialize(p) for p in db.query(PolicyPayment).filter(PolicyPayment.user_id == user.id).all()],
-        "transaction_templates": [_serialize(t) for t in db.query(TransactionTemplate).filter(TransactionTemplate.user_id == user.id).all()],
-        "scheduled_transactions": [_serialize(s) for s in db.query(ScheduledTransaction).filter(ScheduledTransaction.user_id == user.id).all()],
-        "transactions": [_serialize(t) for t in db.query(Transaction).filter(Transaction.user_id == user.id).all()],
-        "attachments": [_serialize(a) for a in db.query(Attachment).filter(Attachment.user_id == user.id).all()],
-        "reminder_rules": [_serialize(r) for r in db.query(ReminderRule).filter(ReminderRule.user_id == user.id).all()],
-    }
-    return data
+    return build_export(db, user)
 
 
 class ImportPayload(BaseModel):
@@ -108,6 +49,19 @@ class ImportPayload(BaseModel):
 def import_data(body: ImportPayload, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """导入 JSON 备份（覆盖当前账号全部数据）"""
     data = body.data
+
+    # 兼容「自动备份文件」的形状 {"_backup": {...}, "users": {"<用户名>": {<单账号导出>}}}
+    # 这样备份目录里的文件可以直接拿去导入恢复，不必手工从 users 里抠出来。
+    if isinstance(data, dict) and isinstance(data.get("users"), dict):
+        mine = data["users"].get(user.username)
+        if mine is None:
+            raise HTTPException(
+                status_code=400,
+                detail="这是一份自动备份文件，其中没有账号「%s」的数据（含：%s）"
+                       % (user.username, "、".join(data["users"].keys())),
+            )
+        data = mine
+
     if not data or data.get("version") != EXPORT_VERSION:
         raise HTTPException(status_code=400, detail="无效的备份文件格式")
 
@@ -117,14 +71,14 @@ def import_data(body: ImportPayload, db: Session = Depends(get_db), user: User =
 
     # 2. 重建父表，记录 old_id -> new_id 映射
     id_maps = {}
-    for model in _PARENT_MODELS:
+    for model in PARENT_MODELS:
         key = model.__tablename__
         id_maps[key] = {}
         for row in data.get(key, []):
             row = dict(row)
             old_id = row.pop("id", None)
             row.pop("user_id", None)
-            _convert_cols(model, row)
+            convert_cols(model, row)
             # 账户外键映射（资产/保单/借款的 account_id、投资账户的 cash_account_id）
             for fk_col in ("account_id", "cash_account_id"):
                 if fk_col in row and row[fk_col] is not None:
@@ -136,14 +90,13 @@ def import_data(body: ImportPayload, db: Session = Depends(get_db), user: User =
                 id_maps[key][old_id] = obj.id
 
     # 3. 重建子表（外键按映射转换）
-    for model in _CHILD_MODELS:
+    for model in CHILD_MODELS:
         key = model.__tablename__
         for row in data.get(key, []):
             row = dict(row)
             row.pop("id", None)
             row.pop("user_id", None)
-            _convert_cols(model, row)
-            # 外键映射
+            convert_cols(model, row)
             for fk_col in ("asset_id", "account_id", "investment_account_id", "category_id",
                            "from_account_id", "to_account_id", "loan_id", "policy_id"):
                 if fk_col in row and row[fk_col] is not None:
@@ -206,3 +159,140 @@ def import_data(body: ImportPayload, db: Session = Depends(get_db), user: User =
 
     db.commit()
     return {"ok": True, "message": "数据导入成功（覆盖当前账号）"}
+
+
+# ---------------------------------------------------------------------------
+# 回收站（删除归档，v1.9.0）
+# ---------------------------------------------------------------------------
+@router.get("/deleted")
+def list_deleted(
+    limit: int = Query(200, ge=1, le=2000),
+    module: str | None = Query(None, description="按原表名过滤，如 policy_payments"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """列出本账号被删除并归档的记录（只读，供事后找回）。
+
+    归档表只写不读、不参与任何统计与对账，所以这里的结果**不代表当前账目里的数据**。
+    """
+    import json
+
+    q = db.query(DeletedRecord).filter(DeletedRecord.user_id == user.id)
+    if module:
+        q = q.filter(DeletedRecord.module == module)
+    rows = q.order_by(DeletedRecord.deleted_at.desc(), DeletedRecord.id.desc()).limit(limit).all()
+
+    out = []
+    for r in rows:
+        try:
+            payload = json.loads(r.payload) if r.payload else {}
+        except ValueError:
+            payload = {}
+        try:
+            context = json.loads(r.context) if r.context else None
+        except ValueError:
+            context = None
+        out.append({
+            "id": r.id,
+            "module": r.module,
+            "record_id": r.record_id,
+            "label": r.label,
+            "deleted_at": r.deleted_at.isoformat() if r.deleted_at else None,
+            "context": context,
+            "payload": payload,
+        })
+
+    # 分组统计（供界面做筛选器）
+    agg: dict[str, int] = {}
+    for r in db.query(DeletedRecord).filter(DeletedRecord.user_id == user.id).all():
+        agg[r.module] = agg.get(r.module, 0) + 1
+
+    return {
+        "total": sum(agg.values()),
+        "modules": [{"module": k, "count": v} for k, v in sorted(agg.items(), key=lambda x: -x[1])],
+        "items": out,
+    }
+
+
+@router.get("/deleted/export")
+def export_deleted(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """导出全部删除归档为 JSON（存档留底用；同样不参与账目）"""
+    import json
+    from datetime import datetime
+
+    rows = db.query(DeletedRecord).filter(DeletedRecord.user_id == user.id) \
+        .order_by(DeletedRecord.deleted_at.asc(), DeletedRecord.id.asc()).all()
+    items = []
+    for r in rows:
+        try:
+            payload = json.loads(r.payload) if r.payload else {}
+        except ValueError:
+            payload = {}
+        try:
+            context = json.loads(r.context) if r.context else None
+        except ValueError:
+            context = None
+        items.append({
+            "module": r.module, "record_id": r.record_id, "label": r.label,
+            "deleted_at": r.deleted_at.isoformat() if r.deleted_at else None,
+            "context": context, "payload": payload,
+        })
+    return {
+        "exported_at": datetime.now().isoformat(),
+        "username": user.username,
+        "count": len(items),
+        "note": "这是删除归档（回收站）的导出，不是账目数据。恢复需人工把 payload 重新录入。",
+        "items": items,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 自动备份的状态与手动触发
+# ---------------------------------------------------------------------------
+@router.get("/backup/status")
+def backup_status():
+    """备份目录、保留份数、最近一份是否可用（不读数据库）。"""
+    return backup.status()
+
+
+@router.post("/backup/now")
+def backup_now(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """立刻写一份备份（**含全部账号**，不只当前账号）。
+
+    日常由后台线程每日自动写一份；这里用于「升级前手动留一份」。
+    """
+    try:
+        res = backup.run_backup(db, reason="manual")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail="备份失败：%s: %s" % (type(exc).__name__, exc))
+    return {
+        "ok": True,
+        "file": res["file"],
+        "size": res["size"],
+        "users": res["users"],
+        "removed": res["removed"],
+        "dir": backup.backup_dir(),
+        "message": "已写出 %s（%.1f KB，覆盖 %d 个账号）"
+                   % (res["file"], res["size"] / 1024.0, len(res["users"])),
+    }
+
+
+@router.get("/backup/files")
+def backup_files():
+    """列出备份文件（最新在前）。"""
+    import os
+    from datetime import datetime
+
+    files = list(reversed(backup.list_files()))
+    out = []
+    for path in files:
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        out.append({
+            "name": os.path.basename(path),
+            "size": st.st_size,
+            "at": datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
+        })
+    return {"dir": backup.backup_dir(), "keep": backup.keep_count(), "files": out}
