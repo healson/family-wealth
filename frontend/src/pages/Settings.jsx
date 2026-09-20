@@ -1,9 +1,16 @@
 import React, { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Button, Card, Form, Input, InputNumber, Modal, Popconfirm, Select, Switch, Table, Tag, Upload, message } from 'antd'
-import { PlusOutlined, UserSwitchOutlined, DownloadOutlined, UploadOutlined, ApiOutlined } from '@ant-design/icons'
+import { Alert, Button, Card, Form, Input, InputNumber, Modal, Popconfirm, Select, Switch, Table, Tag, Upload, message } from 'antd'
+import { PlusOutlined, UserSwitchOutlined, DownloadOutlined, UploadOutlined, ApiOutlined, SyncOutlined, CopyOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import api, { errMsg } from '../api'
+
+// 更新检查来源的可读名（与后端 /api/system/update-check 的 source 字段对应）
+const UPDATE_SOURCE_LABEL = {
+  manifest: '更新清单 URL',
+  github: 'GitHub Releases',
+  none: '未配置来源',
+}
 
 export default function Settings() {
   const navigate = useNavigate()
@@ -33,6 +40,32 @@ export default function Settings() {
   const [resetOpen, setResetOpen] = useState(false)
   const [confirmText, setConfirmText] = useState('')
   const [resetting, setResetting] = useState(false)
+
+  // 系统更新（只检查、只提示，绝不自动更新或重启）
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
+  const [updateInfo, setUpdateInfo] = useState(null)
+
+  const checkUpdate = async (force = false) => {
+    setCheckingUpdate(true)
+    try {
+      const res = await api.get('/system/update-check', { params: force ? { force: true } : {} })
+      setUpdateInfo(res.data)
+    } catch (e) {
+      message.error(errMsg(e, '检查更新失败'))
+    } finally {
+      setCheckingUpdate(false)
+    }
+  }
+
+  const copyUpgradeCmd = async () => {
+    const cmd = updateInfo?.upgrade_command || 'docker compose pull && docker compose up -d'
+    try {
+      await navigator.clipboard.writeText(cmd)
+      message.success('升级命令已复制')
+    } catch (e) {
+      message.info(cmd)
+    }
+  }
 
   useEffect(() => {
     api.get('/health').then((res) => {
@@ -323,6 +356,56 @@ export default function Settings() {
           </Upload>
           <Button danger onClick={() => setResetOpen(true)}>清空我的记录</Button>
         </div>
+      </Card>
+
+      <Card title="系统更新" style={{ borderRadius: 12, marginBottom: 12 }}>
+        <div style={{ marginBottom: 10, fontSize: 13, color: 'rgba(0,0,0,0.55)' }}>
+          当前版本 <Tag color="blue">v{version || '—'}</Tag>
+          本功能<b>只检查、只提示</b>：不会自动拉取镜像、不会自动重启服务，升级始终由你手动执行。
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <Button icon={<SyncOutlined />} loading={checkingUpdate} onClick={() => checkUpdate(false)}>检查更新</Button>
+          {updateInfo && (
+            <Button type="link" size="small" onClick={() => checkUpdate(true)}>重新查询（忽略缓存）</Button>
+          )}
+        </div>
+        {updateInfo && (
+          <Alert
+            style={{ marginTop: 12 }}
+            showIcon
+            type={
+              updateInfo.update_available === true ? 'warning'
+                : updateInfo.update_available === false ? 'success' : 'info'
+            }
+            message={
+              updateInfo.update_available === true ? `发现新版本 v${updateInfo.latest}`
+                : updateInfo.update_available === false ? '已是最新版本'
+                  : '无法判断是否有新版本'
+            }
+            description={(
+              <div style={{ fontSize: 13, lineHeight: 1.8 }}>
+                <div style={{ whiteSpace: 'pre-wrap' }}>{updateInfo.note}</div>
+                <div style={{ marginTop: 8, fontSize: 12, color: 'rgba(0,0,0,0.45)' }}>
+                  来源：{UPDATE_SOURCE_LABEL[updateInfo.source] || updateInfo.source}
+                  {updateInfo.latest ? ` · 最新版本 v${updateInfo.latest}` : ''}
+                  {updateInfo.released_at ? ` · 发布于 ${dayjs(updateInfo.released_at).format('YYYY-MM-DD HH:mm')}` : ''}
+                  {updateInfo.cached ? ' · 结果来自缓存（10 分钟内）' : ''}
+                </div>
+                <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)' }}>升级命令：</span>
+                  <Tag style={{ fontFamily: 'monospace', marginRight: 0 }}>{updateInfo.upgrade_command}</Tag>
+                  <Button type="link" size="small" icon={<CopyOutlined />} onClick={copyUpgradeCmd}>复制</Button>
+                  {updateInfo.html_url && (
+                    <a href={updateInfo.html_url} target="_blank" rel="noreferrer" style={{ fontSize: 13 }}>查看发布说明</a>
+                  )}
+                </div>
+                <div style={{ marginTop: 6, fontSize: 12, color: 'rgba(0,0,0,0.35)' }}>
+                  数据在 ./data 目录里，升级不会丢数据。
+                </div>
+              </div>
+            )}
+          />
+        )}
       </Card>
 
       <Card title="MCP 接口（供 AI Agent 调用）" style={{ borderRadius: 12 }}>

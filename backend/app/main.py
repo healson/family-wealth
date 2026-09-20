@@ -9,15 +9,19 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from .database import SessionLocal, get_db
-from .routers import (
-    accounts, admin, ai, assets, attachments, auth, bill_import, dashboard,
-    data_io, docs, financial, insurance, loans, options, reminders, templates,
-    transactions, transfers,
-)
-from .seed import init_db, seed_demo
 
+# 这两个常量必须定义在「导入 routers」之前：
+# routers/system.py 会 `from ..main import VERSION`，若 VERSION 定义在导入之后，
+# 那个导入会拿到一个尚未初始化的模块并抛 ImportError。
 STATIC_DIR = os.environ.get("STATIC_DIR", "/app/static")
-VERSION = "1.7.9"
+VERSION = "1.8.0"
+
+from .routers import (  # noqa: E402  —— 必须在上面的常量之后导入
+    accounts, admin, ai, assets, attachments, auth, bill_import, dashboard,
+    data_io, docs, financial, insurance, loans, options, reminders, system,
+    templates, transactions, transfers,
+)
+from .seed import init_db, seed_demo  # noqa: E402
 
 
 @asynccontextmanager
@@ -73,6 +77,7 @@ app.include_router(dashboard.router)
 app.include_router(attachments.router)
 app.include_router(reminders.router)
 app.include_router(docs.router)
+app.include_router(system.router)
 
 # MCP Server（供外部 AI Agent 调用）
 from .mcp_server import mcp_message_endpoint, mcp_post_endpoint, mcp_sse_endpoint
