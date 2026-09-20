@@ -3,7 +3,7 @@
 部署在 NAS 上的家庭财富管理 Web 应用，单容器 Docker 部署，自适应 PC / 手机端。
 多账号、数据隔离、**资金全链路强关联**、AI 分析、MCP 接口，一套系统管全家人的钱。
 
-当前版本：**v1.8.0**
+当前版本：**v1.9.0**
 
 ## ✨ 功能总览
 
@@ -30,6 +30,9 @@
 - **🔔 续期/到期提醒**：保单缴费/到期、借款还款到期前，按规则（默认提前 1 个月、1 周、3 天、2 天、1 天）自动弹出提醒框，可**直达对应页面处理**；规则可在设置管理中增删改启停
 - **📖 使用手册**：页面顶部「使用手册」按钮（AI 助手左侧），点击在**页面内直接阅读**本 README（含功能说明与场景化使用案例）
 - **数据导出/导入**：JSON 全量备份与恢复（含附件元数据、提醒规则、缴费/投资流水），一键导出、导入覆盖
+- **🩺 系统健康自检**（v1.9.0）：设置管理 → 「系统健康」一屏看到三件事 —— **账目平不平**（每个账户「期初基准 + 全部资金流水 = 实际余额」，启动时也会写一条日志）、**数据版本匹配不匹配**（防「旧镜像挂在新数据库上」静默算错）、**备份在不在**。另可点「立即备份」手动留一份
+- **🗑 最近删除（回收站）**（v1.9.0）：删除记录时会先把原样存一份，可在设置管理里查看与导出 —— 自用没有第二个人兜底，误删只能靠自己找回
+- **💾 自动备份**（v1.9.0）：每天自动导出一份全账号备份并轮转保留最近 14 份；目录可用 `BACKUP_DIR` 指到 NAS 上另一处（**强烈建议**：默认与数据库同卷，卷坏了一起没）
 - **MCP 接口**：暴露工具给外部 AI Agent（Claude / Cursor / 自建 Agent）查询与记账。记账工具 `add_transaction` 与页面一致**必须传 `account_id`**（收支自动增减该账户余额，保证资金守恒）；可先用 `list_accounts` 查账户 ID
 
 ## 💸 资金强关联体系（v1.2+ 核心设计）
@@ -202,8 +205,24 @@ docker compose logs -f | tail -50
 | `AI_BASE_URL` | `https://api.openai.com/v1` | AI 服务地址（DeepSeek: `https://api.deepseek.com/v1`；Ollama: `http://127.0.0.1:11434/v1`） |
 | `AI_MODEL` | `gpt-4o-mini` | 默认模型（DeepSeek: `deepseek-chat`） |
 | `MCP_TOKEN` | 空 | 设置后，外部 Agent 需带此令牌访问 `/mcp` |
+| `UPDATE_CHECK_MANIFEST_URL` | 空 | 「检查更新」的来源之一：公开可访问的 JSON，形如 `{"version":"1.9.0"}` |
+| `GITHUB_TOKEN` | 空 | 「检查更新」的来源之二：有 `repo` 权限的 PAT，用于查 GitHub Releases（本仓库私有，匿名查不到） |
+| `BACKUP_DIR` | `<DATA_DIR>/backups` | **自动备份目录。强烈建议指到 NAS 上另一处目录** —— 默认与数据库同在 `./data`，卷损坏时两者会一起没 |
+| `BACKUP_KEEP` | `14` | 备份保留份数（超出按时间轮转删除最旧的） |
+| `BACKUP_ENABLED` | `true` | 是否开启每日自动备份（不推荐关闭） |
 
 > 💡 AI 配置优先级：页面「模型设置」保存的账号级配置 > 环境变量。
+>
+> 💡 更新检查与自动备份都**不影响正常使用**：不配更新检查只是点「检查更新」提示未配置来源；自动备份默认就开着。
+> 🔴 **备份务必指向异卷**：这是单用户自托管，`./data` 是这本账的唯一副本，而且没有第二个人会发现问题。
+> 在 compose 里加一行挂载并把 `BACKUP_DIR` 指过去，才算真正多一份保险：
+> ```yaml
+>     environment:
+>       - BACKUP_DIR=/backups
+>     volumes:
+>       - ./data:/data
+>       - /vol1/1000/backups/family-wealth:/backups   # 换成你 NAS 上另一处目录
+> ```
 
 ## 📖 使用指南
 
@@ -270,6 +289,17 @@ docker compose logs -f | tail -50
 - **AI 助手**：顶部按钮进入 → 未配置时点「⚙ 模型设置」选择服务商/模型、填入 Key → 可问"我这个月花了多少钱？""哪些保单快到期了？""分析我的支出结构"
 - **数据备份/恢复**：设置管理 → 数据管理 → 导出备份（JSON 全量）/ 导入恢复；或直接复制宿主机 `./data/family_wealth.db`
 - **清空记录**：只清空收支/借款/资产等业务记录，**自动保留全部分类信息**（内置 + 自定义）
+
+### 1️⃣3️⃣ 系统健康、回收站与自动备份（v1.9.0）
+- **系统健康**：设置管理 → 「系统健康」。三张提示卡分别对应「账目是否平」「数据版本是否匹配」「备份是否可用」，右上角「重新检查」可立即重算。
+  - **账目不平不是服务故障**：它不影响你继续记账，只是提醒你去「财富总览 → 余额对账」看看哪笔对不上（常见原因是手工改过余额、或漏记一笔）。**服务本身照常运行** —— 这一点是刻意设计的，`/api/health` 的状态码永远 200，业务状态只放在返回体字段里。
+  - **数据版本不匹配**：只在「用旧镜像挂在新数据库上」时出现。此时界面会给出说明与建议（换回新镜像 / 先导出备份）。应用仍可启动使用 —— 自托管场景下可用性优先。
+- **回收站**：设置管理 → 「最近删除」。支持按类型筛选、导出为 JSON。导出的每条都含被删记录的**完整字段**与**补充说明**（比如删保单时退回了多少保费、删账户时余额是多少），按需手工重新录入即可。
+  - 刻意**不做「一键还原」**：被删记录与父记录的关联已不存在，自动重建容易把账搞乱；归档表也**不参与任何账目与对账**，所以删东西不会让余额变化。
+  - 两处删除不归档：删除账号本身、以及启动时的重复提醒规则清理（都不是用户数据丢失）。
+- **自动备份**：每天自动写一份（含全部账号），命名 `fw-backup-YYYYMMDD-HHMMSS.json`，轮转保留最近 `BACKUP_KEEP` 份，可点「立即备份」手动触发（建议升级前点一次）。
+  - 备份文件形状与「导出备份」**完全一致**，因此可以直接拿去「导入恢复」—— 导入接口会自动识别备份文件并挑出当前账号的数据。
+  - 🔴 **务必把 `BACKUP_DIR` 指到数据库之外的目录**（见上面「配置项」）。默认的 `./data/backups` 与数据库同卷，卷坏时两者一起没，等于没备份。界面上会就此给出醒目提示。
 
 ## 🎯 使用案例（场景化教程）
 
@@ -437,18 +467,20 @@ npm run dev
 > `build-and-push` 两段，后者 `needs: test` —— **测试不过就不产出镜像**。
 > 因此 `:latest` 与 `:stable` 都保证是「测试通过」的产物。
 
-#### 一、后端行为回归（`backend/tests/`，六条自检脚本）
+#### 一、后端行为回归（`backend/tests/`，八条自检脚本，共 348 项）
 
 **不依赖真实数据**（各自使用临时库，跑完即清理），改完代码后跑一遍可确认没有破坏资金守恒、也没破坏接口出参类型：
 
 ```bash
 cd backend
 python tests/test_balance_audit.py      # 61 项：收支/转账/借款/保单/资产/投资/定时/导入/MCP 全链路余额联动与回滚
-python tests/test_migrations.py         #  9 项：模拟旧库升级，验证新增列能幂等补列并按父记录回填
+python tests/test_flow_registry.py      # 61 项：资金动作口径注册表守门（新表漏登记即 FAIL）
+python tests/test_api_smoke.py          # 55 项：演示数据下全量读接口巡检 + 写接口返回体金额类型巡检
+python tests/test_runtime_selfcheck.py  # 62 项：schema 哨兵 / 运行时对账 / 删除归档 / 自动备份
+python tests/test_system_update_check.py # 46 项：更新检查接口（有更新/无更新/坏清单/不可达/令牌不泄露/缓存）
 python tests/test_loan_status.py        # 32 项：借款「类型不可改」+ 结清状态同源派生 + 两处口径一致
 python tests/test_loan_api_contract.py  # 22 项：借款列表排序（未结清在前）+ payments[].amount 必须是数字
-python tests/test_api_smoke.py          # 55 项：演示数据下全量读接口巡检 + 写接口返回体金额类型巡检
-python tests/test_system_update_check.py # 46 项：更新检查接口（有更新/无更新/坏清单/不可达/令牌不泄露/缓存）
+python tests/test_migrations.py         #  9 项：模拟旧库升级，验证新增列能幂等补列并按父记录回填
 python tests/probe_loan_edit_type.py    # 行为探针（非断言）：打印借款编辑的真实行为，供人工核对
 ```
 
@@ -458,7 +490,9 @@ python tests/probe_loan_edit_type.py    # 行为探针（非断言）：打印�
 
 `test_loan_api_contract.py` / `test_api_smoke.py` 守的是**出参类型契约**：响应里的金额字段一律是 JSON 数字（递归扫描，不得出现 `"amount":"50.00"` 这种字符串），且全程不得出现 Pydantic serializer warning —— `Numeric` 列的 Decimal 一旦绕过 `float` 声明就是这个征兆，前端排序/求和与 MCP、AI 读取都会受影响。新增出参模型后建议跑一遍。
 
-`test_system_update_check.py` 用**本地起的 HTTP 服务**当更新清单，所以不依赖外网就能覆盖「有更新 / 无更新 / 坏清单 / 不可达 / 令牌泄露 / 缓存」六类路径。
+`test_runtime_selfcheck.py` 守三条**运行时**关键契约（都用 `with TestClient(app)` 让 lifespan 真正跑起来）：账不平 / 数据版本不匹配 / 备份损坏时，`/api/health` **都必须仍然是 200**（业务状态走字段，不走状态码）；以及「删除后账仍然平」证明回收站没污染资金守恒。
+
+`test_flow_registry.py` 扫 SQLAlchemy metadata 守门：凡持有账户列的表，必须在 `utils.FLOW_SOURCES` 或 `utils.FLOW_EXEMPT_TABLES`（需写明理由）里，且登记来源必须真的在 `collect_account_flows` 里取数。**新增资金动作模型却忘了登记口径，CI 会直接拦下来。**
 
 #### 二、结构校验（`check/`，三条脚本，CI 与本地同一份）
 
@@ -481,13 +515,17 @@ family-wealth/
 ├── backend/
 │   ├── app/
 │   │   ├── main.py          # FastAPI 入口，API + 静态文件 + MCP 挂载 + 调度线程
-│   │   ├── models.py        # 数据模型（22 张表，含附件/提醒/缴费记录/投资流水）
+│   │   ├── models.py        # 数据模型（23 张表，含附件/提醒/缴费记录/投资流水/删除归档）
 │   │   ├── schemas.py       # 请求/响应模型
 │   │   ├── auth.py          # JWT 认证、账号管理（增删改）、数据隔离清单
 │   │   ├── mcp_server.py    # MCP Server（HTTP/stdio 双模式）
 │   │   ├── schedulers.py    # 定时交易调度（后台线程自动执行）
 │   │   ├── seed.py          # 初始化、自动迁移（幂等补列）、演示数据
-│   │   ├── utils.py         # 余额联动、统一资金流水口径（collect_account_flows）
+│   │   ├── schema_meta.py   # schema 版本哨兵（防「旧镜像 + 新库」静默算错）
+│   │   ├── health.py        # 运行时对账快照（带缓存，供 /api/health）
+│   │   ├── backup.py        # 自动备份（每日一份 + 轮转 + 启动校验）
+│   │   ├── export_data.py   # 导出实现（手动导出与自动备份共用）
+│   │   ├── utils.py         # 余额联动、统一资金流水口径（collect_account_flows / FLOW_SOURCES）
 │   │   └── routers/         # assets/insurance/accounts/financial/transactions/
 │   │                        #  transfers/loans/options/dashboard/data_io/
 │   │                        #  bill_import/ai/auth/admin/templates/system/
@@ -495,11 +533,13 @@ family-wealth/
 │   ├── requirements.txt
 │   └── tests/               # 回归测试（CI 门禁，跑不过不构建镜像）：
 │                            #   test_balance_audit.py（61 项资金守恒）
-│                            #   test_migrations.py（9 项旧库升级迁移）
+│                            #   test_flow_registry.py（61 项口径注册表守门）
+│                            #   test_api_smoke.py（55 项全接口冒烟）
+│                            #   test_runtime_selfcheck.py（62 项运行时自检）
+│                            #   test_system_update_check.py（46 项更新检查）
 │                            #   test_loan_status.py（32 项借款状态派生）
 │                            #   test_loan_api_contract.py（22 项排序/金额类型契约）
-│                            #   test_api_smoke.py（55 项全接口冒烟）
-│                            #   test_system_update_check.py（46 项更新检查接口）
+│                            #   test_migrations.py（9 项旧库升级迁移）
 │                            #   probe_loan_edit_type.py（借款编辑行为探针）
 ├── check/                   # 结构校验（CI 门禁）：
 │                            #   check_version.py（17 项版本号单一事实源链路）
@@ -522,7 +562,8 @@ family-wealth/
 
 | 版本 | 内容 |
 |---|---|
-| **v1.8.0（当前）** | **工程化加固：CI 测试门禁 + `:stable` 发布标签 + APK 改走 Release 且体积修正 + 三个结构校验脚本 + 系统更新检查（附 46 项新回归，六套共 225 项检查）**：①**CI 加测试门禁**——`build.yml` 拆成 `test` 与 `build-and-push` 两段（后者 `needs: test`），构建前必须先跑通六套回归测试（资金守恒 / 结清派生 / 出参契约 / 全接口冒烟 / 迁移幂等 / 更新检查）与三个结构校验，**测试不过就不产出镜像**。此前 CI 只负责构建镜像，179 个检查点**只在本地跑**，等于「`:latest` 跟随 main」而主干没有门禁——任何未验证的改动都可能直达 NAS 生产环境。②**新增 `:stable` 标签**：`type=raw,value=stable,enable=startsWith(github.ref,'refs/tags/v')`，只由**打 `v*.*.*` 标签**写入，语义是「最近一次正式发布」；compose 默认镜像由 `:latest` 改为 `:stable`，**主干开发不再悄悄影响生产**，「打标签」这个动作本身就等于「把一个测试过的版本推进到生产」（与 `:X.Y.Z` 精确版本、`:latest` 主干最新、`:sha-xxx` 按提交定位四者互不干扰）。③**APK 不再提交进 git**——`git rm --cached` 撤出，`apk/*.apk` 加入 `.gitignore`，改为走 **GitHub Release 附件**：二进制进 git 对象库后**不可回收**、每版 +12.6 MB、`clone`/CI checkout 逐版变慢，而 Release 附件不进对象库、可替换、有稳定直链；`apk/` 目录只保留分发说明（去哪下载、怎么构建、怎么发布、v1.7.9 旧包怎么从历史取回）。④**新增三个结构校验脚本**（`check/` 目录，CI 与本地同一份）：`check_version.py` 校验版本号单一事实源链路（`main.py` → README 版本历史标「当前」 → 安卓 `build.gradle` 是构建时读取而非写死 → `apk/` 下包名版本一致）；`check_compose.py` 把三份 compose 的**部署契约**固化成断言（`./data:/data` 数据卷不得丢、容器侧端口必须 8000、`ADMIN_PASSWORD`/`JWT_SECRET`/`TZ` 键名、healthcheck 打 `/api/health`、独立网段合法，并额外校验**仓库内两份的凭据必须是占位值**以防真实密码误提交）；`check_tar.py` 让「打包配方」与「打包校验」共用同一份排除规则（`.git` / `node_modules` / `dist` / `data` / `assets/public*`（含 `public_old_*`）/ `.apk` / `*.tar.gz`），并校验体积量级、无 1MB 级文件、包内 `VERSION` 与工作区一致、必备文件齐备——`--out` 参数可直接产出交付包，彻底避免「按 A 规则打包、按 B 规则检查」的假通过。⑤**新增「设置管理 → 系统更新」检查**（`GET /api/system/update-check`）：**只检查、只提示**，不拉镜像、不重启容器——自动更新需要把 `/var/run/docker.sock` 交给容器，等价于把宿主机 root 权限交出去，对本项目「单人自用、部署在自家 NAS」的场景不值得；支持两种来源（公开 JSON 清单 `UPDATE_CHECK_MANIFEST_URL`／GitHub Releases `GITHUB_TOKEN`，仓库私有故匿名查不到），**未配置时返回 200 + 明确的启用说明而不是报错**，结果缓存 10 分钟、可强制刷新，响应中**绝不出现令牌明文**（含异常消息脱敏）。⑥新增 `backend/tests/test_system_update_check.py`（46 项）：用本地起的 HTTP 服务当更新清单，覆盖「有更新／无更新（等值、低版本不回退）／`v` 前缀与 `-beta` 后缀归一化／坏 JSON／HTTP 500／404／无效令牌／令牌不泄露／缓存命中与强制刷新／鉴权」十一组路径。⑦`main.py` 里 `STATIC_DIR`/`VERSION` 两个常量上移到「导入 routers」之前——`routers/system.py` 需要 `from ..main import VERSION`，常量若定义在导入之后会拿到尚未初始化的模块并抛 `ImportError`。⑧**修掉 APK 体积虚高：12.55 MB → 4.84 MB（-61.5%）**，两个独立原因：**(a) 历史 web 资源备份被打进包** —— `android/app/src/main/assets/` 下的**全部内容**都会被 AAPT 原样打包（不看你用不用，`mergeDebugAssets/merger.xml` 里可见）。2026-08-25 ~ 08-30 的多次同步在该目录留下 6 份 `public_old_<时间戳>` 备份（磁盘 21.4 MB / 未压缩 20.6 MB），而当前真正需要的 web 资源只有 2.5 MB，v1.7.9 的包里有 573 个条目、压缩后 12.45 MB，其中约 7.5 MB 是这些备份。**(b) AGP 增量打包留零填充** —— 删掉备份后重打，包内真实内容只剩 4.76 MB、`_old_` 条目为 0，但文件仍有 12.54 MB：逐条目做偏移分析发现 offset 4,330,165 处有 **7.71 MB 连续零字节 + 124 个零长度占位条目**，是被删条目保留原偏移造成的；`rm -rf app/build/outputs` 强制重写后立刻回到 4.84 MB（填充仅 0.08 MB）。`build-apk.sh` 已加入三步防护：打包前清理 `assets/` 下非 `public` 目录（清不掉即中止）→ 打包前 `rm -rf app/build/outputs` → 打包后用 JDK 自带 `jar` 列包内条目、发现 `_old_` 残留即中止；同时版本号解析由 `grep -oP`（Windows Git Bash 不一定有 PCRE）改为 `sed`，**解析失败直接中止**而不是回退到写死的 `1.6.3`（那会产出文件名版本号与 `/api/health` 对不上的 APK）。 |
+| **v1.9.0（当前）** | **运行时自检 + 删除回收站 + 自动备份 + 资金口径注册表（八套共 348 项检查）**：五项加固，都围绕同一个判断 —— **自用场景没有第二个人兜底，所以「能发现」与「能找回」优先于架构美化**。①**schema 版本哨兵**（`schema_meta.py`）：本项目的迁移一直是单向的（启动时幂等 `ALTER TABLE ADD COLUMN`），解决了「新镜像 + 旧库」，但**「旧镜像 + 新库」原本无人管**，而它的失败方式很隐蔽 —— 不是崩，是**悄悄算错**：新版本给 `policy_payments` 加了账户快照列并回填了历史数据，你把镜像回滚到旧版后，旧代码写入的新缴费记录不带快照，新代码再读时走「父记录兜底」分支，一旦这期间改过保单缴费账户，这笔钱就归到**错误的账户**，且没有任何报错。现在库内 `_meta` 表记录 schema 版本，启动时双向比对；**库比代码新时大声警告但不拒绝启动**（自托管应用的可用性优先于严格性 —— 若写 `raise`，哨兵自己出 bug 就会让人面对「起不来又改不动账」的绝境），并在 `/api/health` 暴露 `schema_ok`。同时校验「代码声明的资金快照列是否真的都在库里」，兜住迁移静默失败。②**把对账从「只在改代码时跑」提升到运行时**：61 项守恒断言原本只在本地或 CI 跑，部署之后账平不平没人看（手工改过余额、漏记一笔、导入一份不完整备份都会让账悄悄不平）。新增 `health.py`：启动时跑一次对账并写日志，结果带 `books_balanced` 暴露到 `/api/health`，设置页新增「系统健康」区块。⚠️ **关键约束：`/api/health` 的状态码恒为 200** —— 它被三处 Docker HEALTHCHECK、登录页、设置页消费，若让它对业务数据敏感，一个财务差异会被误报成服务故障（容器上 unhealthy、自查命令失败）；且它**只读缓存**（后台线程按 10 分钟 TTL 刷新），因为 HEALTHCHECK 每 30 秒打一次，实时全量对账会变成重负载。对账计算同时抽成 `utils.reconcile_accounts`，总览页与启动自检共用同一实现。③**删除回收站**（`deleted_records` 表 + 21 处删除点接入）：每次删除前把记录原样存一份（含全部字段 + 补充上下文，如「退回了多少保费、从哪个账户」），设置页可查看与导出。**刻意不做软删除**：软删除要让 `collect_account_flows` 的 9 个来源全部记得过滤已删记录，**漏一处就静默对账失衡** —— 那恰恰是本项目最要紧的不变量；放在独立只写不读的表里，则余额逻辑一行都不用改，61 项守恒测试天然全绿（新增测试专门断言「删除后对账差异仍全为 0」）。④**自动备份**（`backup.py`）：每日把全账号数据导出一份 JSON 到备份目录并轮转保留最近 14 份；**目录可用 `BACKUP_DIR` 指到 NAS 上另一处**（默认与数据库同在 `./data`，卷损坏时两者会一起没，界面会就此给出提示）；启动时校验最近一份可解析（含结构与必要表键），异常在 `/health` 报出。备份文件形状与手动导出**完全一致**，因此可以直接拿去「导入恢复」（导入接口已支持识别备份文件并挑出当前账号）。⑤**资金动作口径注册表**（`utils.FLOW_SOURCES` + `test_flow_registry.py`）：`collect_account_flows` 是全部流水与对账的唯一口径，而**新增一类资金动作时忘了在这里取数，那笔钱会在流水与对账里彻底消失 —— 不报错、只是账不平，往往几个月后才发现**。现在把 8 类来源（收支 / 存取 / 转账 / 借款本金 / 借款收还 / 保单缴费 / 资产购入 / 投资转入转出）声明化，并由守门测试扫 SQLAlchemy metadata：凡持有账户列的表必须在注册表或**显式豁免表**（豁免须写明理由）里，且每个登记来源的模型必须真的出现在取数函数源码里 —— 写测试时它当场抓出两张我漏归类的表（`insurance_policies`、`daily_pnl`）。⑥**修掉一个会在自动备份里炸掉的 bug**：`Numeric(18,2)` 列取回的是 `Decimal`，而标准库 `json.dumps` 不认它（`Object of type Decimal is not JSON serializable`）。手动导出走 FastAPI 的编码器所以一直没暴露，但自动备份要自己 `json.dump` 落盘 —— 新增统一的 `utils.jsonable()`，导出、归档、备份三处共用。⑦新增 `test_runtime_selfcheck.py`（62 项，含「账不平时 /health 仍 200」「库比代码新时照常服务」「备份损坏时 /health 仍 200」三条关键回归守卫）与 `test_flow_registry.py`（61 项）。 |
+| **v1.8.0** | **工程化加固：CI 测试门禁 + `:stable` 发布标签 + APK 改走 Release 且体积修正 + 三个结构校验脚本 + 系统更新检查（附 46 项新回归，六套共 225 项检查）**：①**CI 加测试门禁**——`build.yml` 拆成 `test` 与 `build-and-push` 两段（后者 `needs: test`），构建前必须先跑通六套回归测试（资金守恒 / 结清派生 / 出参契约 / 全接口冒烟 / 迁移幂等 / 更新检查）与三个结构校验，**测试不过就不产出镜像**。此前 CI 只负责构建镜像，179 个检查点**只在本地跑**，等于「`:latest` 跟随 main」而主干没有门禁——任何未验证的改动都可能直达 NAS 生产环境。②**新增 `:stable` 标签**：`type=raw,value=stable,enable=startsWith(github.ref,'refs/tags/v')`，只由**打 `v*.*.*` 标签**写入，语义是「最近一次正式发布」；compose 默认镜像由 `:latest` 改为 `:stable`，**主干开发不再悄悄影响生产**，「打标签」这个动作本身就等于「把一个测试过的版本推进到生产」（与 `:X.Y.Z` 精确版本、`:latest` 主干最新、`:sha-xxx` 按提交定位四者互不干扰）。③**APK 不再提交进 git**——`git rm --cached` 撤出，`apk/*.apk` 加入 `.gitignore`，改为走 **GitHub Release 附件**：二进制进 git 对象库后**不可回收**、每版 +12.6 MB、`clone`/CI checkout 逐版变慢，而 Release 附件不进对象库、可替换、有稳定直链；`apk/` 目录只保留分发说明（去哪下载、怎么构建、怎么发布、v1.7.9 旧包怎么从历史取回）。④**新增三个结构校验脚本**（`check/` 目录，CI 与本地同一份）：`check_version.py` 校验版本号单一事实源链路（`main.py` → README 版本历史标「当前」 → 安卓 `build.gradle` 是构建时读取而非写死 → `apk/` 下包名版本一致）；`check_compose.py` 把三份 compose 的**部署契约**固化成断言（`./data:/data` 数据卷不得丢、容器侧端口必须 8000、`ADMIN_PASSWORD`/`JWT_SECRET`/`TZ` 键名、healthcheck 打 `/api/health`、独立网段合法，并额外校验**仓库内两份的凭据必须是占位值**以防真实密码误提交）；`check_tar.py` 让「打包配方」与「打包校验」共用同一份排除规则（`.git` / `node_modules` / `dist` / `data` / `assets/public*`（含 `public_old_*`）/ `.apk` / `*.tar.gz`），并校验体积量级、无 1MB 级文件、包内 `VERSION` 与工作区一致、必备文件齐备——`--out` 参数可直接产出交付包，彻底避免「按 A 规则打包、按 B 规则检查」的假通过。⑤**新增「设置管理 → 系统更新」检查**（`GET /api/system/update-check`）：**只检查、只提示**，不拉镜像、不重启容器——自动更新需要把 `/var/run/docker.sock` 交给容器，等价于把宿主机 root 权限交出去，对本项目「单人自用、部署在自家 NAS」的场景不值得；支持两种来源（公开 JSON 清单 `UPDATE_CHECK_MANIFEST_URL`／GitHub Releases `GITHUB_TOKEN`，仓库私有故匿名查不到），**未配置时返回 200 + 明确的启用说明而不是报错**，结果缓存 10 分钟、可强制刷新，响应中**绝不出现令牌明文**（含异常消息脱敏）。⑥新增 `backend/tests/test_system_update_check.py`（46 项）：用本地起的 HTTP 服务当更新清单，覆盖「有更新／无更新（等值、低版本不回退）／`v` 前缀与 `-beta` 后缀归一化／坏 JSON／HTTP 500／404／无效令牌／令牌不泄露／缓存命中与强制刷新／鉴权」十一组路径。⑦`main.py` 里 `STATIC_DIR`/`VERSION` 两个常量上移到「导入 routers」之前——`routers/system.py` 需要 `from ..main import VERSION`，常量若定义在导入之后会拿到尚未初始化的模块并抛 `ImportError`。⑧**修掉 APK 体积虚高：12.55 MB → 4.84 MB（-61.5%）**，两个独立原因：**(a) 历史 web 资源备份被打进包** —— `android/app/src/main/assets/` 下的**全部内容**都会被 AAPT 原样打包（不看你用不用，`mergeDebugAssets/merger.xml` 里可见）。2026-08-25 ~ 08-30 的多次同步在该目录留下 6 份 `public_old_<时间戳>` 备份（磁盘 21.4 MB / 未压缩 20.6 MB），而当前真正需要的 web 资源只有 2.5 MB，v1.7.9 的包里有 573 个条目、压缩后 12.45 MB，其中约 7.5 MB 是这些备份。**(b) AGP 增量打包留零填充** —— 删掉备份后重打，包内真实内容只剩 4.76 MB、`_old_` 条目为 0，但文件仍有 12.54 MB：逐条目做偏移分析发现 offset 4,330,165 处有 **7.71 MB 连续零字节 + 124 个零长度占位条目**，是被删条目保留原偏移造成的；`rm -rf app/build/outputs` 强制重写后立刻回到 4.84 MB（填充仅 0.08 MB）。`build-apk.sh` 已加入三步防护：打包前清理 `assets/` 下非 `public` 目录（清不掉即中止）→ 打包前 `rm -rf app/build/outputs` → 打包后用 JDK 自带 `jar` 列包内条目、发现 `_old_` 残留即中止；同时版本号解析由 `grep -oP`（Windows Git Bash 不一定有 PCRE）改为 `sed`，**解析失败直接中止**而不是回退到写死的 `1.6.3`（那会产出文件名版本号与 `/api/health` 对不上的 APK）。 |
 | **v1.7.9** | **借款列表排序 + 接口金额类型两处修复（附 22 项契约回归 + 55 项全接口冒烟）**：①**借款列表「未结清」恒在前**——原实现 `order_by(Loan.status.asc())` 是**字符串排序**，中文「已结清」的「已」（U+5DF2）编码小于「未结清」的「未」（U+672A），已结清被顶到列表最前，**活账（未结清）反被压在下面**（借出未收回的钱要翻页才看得到）。改用显式 `case`（已结清记 1、其余含历史遗留状态值记 0）后语义清晰且不受字符集编码影响；同组内仍按借款日期倒序 → 录入顺序倒序，收款结清即时沉底、删收款即时回升；②**借款接口 `payments[].amount` 由字符串改回数字**——`_to_out` 里 `out.payments = loan.payments` 直接挂 ORM 对象，而 Pydantic **赋值默认不校验**，字段里留下 ORM 对象；序列化时 `Numeric(18,2)` 列的 Decimal 绕过 `float` 声明，接口吐出 `"amount": "50.00"`（字符串）并伴随 serializer warning，与同一响应里的 `amount`/`paid_amount`/`remaining`（数字）**类型不一致**，前端 `fmtMoney` 虽能兜住但排序、求和、MCP/AI 读取都会踩坑。改为逐条 `model_validate`，金额统一为数字；③**给所有出参模型打开 `validate_assignment`**——同类「把 ORM 对象直接赋给响应字段」的写法会在赋值当场被强制转换而不是静默产出错误类型，杜绝再犯（已在全接口巡检确认无副作用）；④新增 `test_loan_api_contract.py`（22 项，锁死排序与金额类型契约）与 `test_api_smoke.py`（55 项，演示数据下全量读接口 + 全部写接口返回体巡检，递归扫描响应中金额字段不得为字符串、全程不得出现 serializer warning）；⑤**安卓 APK 版本号与项目版本同源**——`android/app/build.gradle` 改为构建时读取 `backend/app/main.py` 的 `VERSION`，写入 `versionName`（`1.7.9`）与 `versionCode`（`X*10000+Y*100+Z` → `10709`），此前写死为 `1.0` / `1`（装了 v1.7.9 而系统「应用信息」仍显示 1.0）；同时修掉 `build-apk.sh` 的两个坑：构建前清空 `dist`（`emptyOutDir=false` 会累积旧 hash 产物并被打进 APK）、`cap sync` 在 Windows 失败时自动回退为手动同步 web 资源 |
 | **v1.7.8** | **借款「类型不可改」+ 结清状态同源派生（附 32 项回归验证）**：①**编辑借款弹窗的「类型」置灰并置灰提交**——类型决定资金方向（借出扣款 / 借入入账），属已发生的历史事实。此前弹窗可点选、请求也带着 `type`，但后端 `LoanUpdate` 无该字段而**静默丢弃并照常返回 200**，前端提示「保存成功」实则未改，用户以为已修正、后续收款/还款方向一路反着记（实测场景：借给张三 10000 录成「借入」→ 账户凭空 +10000，总览把「应收 7000」算成「应付 7000」）；现在编辑态不提交 `type`、弹窗置灰并提示「如需变更请删除后重新新增」，接口层加 `extra="forbid"`，多余字段返回 **422 明确报错而不是静默无效**；②**结清状态唯一由「本金 − 已收/已还」派生**，`LoanUpdate` 移除可写的 `status`，改金额后**自动重算**——此前可写出「remaining 7000 却标已结清」这类矛盾数据，导致**借款页封面（按 status 过滤）与财富总览（按 remaining 判定）同一笔金额不一致**；③借款页封面统计、结清筛选、剩余列、收款/还款入口统一改按 `remaining` 判定，与总览口径完全对齐；④新增幂等校正 `sync_loan_status`，在**启动时**与 **JSON 备份导入后**各校正一次，自动修掉存量矛盾数据 |
 | **v1.7.7** | **收支逻辑全面审计修复（11 项，附 61 项端到端回归验证）**：①**固定资产购入只从付款账户扣「全款部分」**（= 购入价 − 贷款余额），此前误扣全额导致账户余额少计、总览「资产购入」流向虚高；②**删除投资账户前先回滚其转入/转出对现金账户的影响**，此前只删账户会让现金账户对账永久失衡；③**删除保单退回已缴全部保费**，此前只删缴费记录不退款、账户被扣而流水消失导致对账失衡；④**定时交易「立即执行」补齐余额联动**（此前只有后台调度联动，手动执行不联动）；⑤**MCP `add_transaction` 强制要求 `account_id` 并联动余额**（此前可造出「无账户幽灵收支」破坏资金守恒）；⑥**账单导入过滤「不计收支」**（余额宝/零钱通申赎、账户互转等内部资金移动，此前被当作支出凭空扣款）并修正表头列匹配优先级（微信「交易类型」列抢在「收/支」前，导致收入行被误判为支出）；⑦**定时交易首个执行日不再早于生效日**（此前创建任务会立刻补记一笔「生效前」的收支并扣款）；⑧**删除现金账户连带撤销转账对对方账户的影响**并清理悬挂引用；⑨**演示数据回填期初基准**，全新安装的「余额对账」不再全部标红；⑩**保单缴费自带「缴费账户快照」**（`policy_payments.account_id`），改缴费账户后历史缴费不再被整体重新归属到新账户；⑪**投资流水自带「现金账户快照」**（`investment_flows.cash_account_id`），改关联现金账户后历史流水不再漂移——⑩⑪ 修复前，只要改过一次关联账户，新旧账户的「余额对账」会同时失衡，且删除保单/投资账户时退款会跑到错误的账户 |

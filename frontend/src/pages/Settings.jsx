@@ -12,6 +12,17 @@ const UPDATE_SOURCE_LABEL = {
   none: '未配置来源',
 }
 
+// 删除归档里的 module 是原表名，翻译成中文便于辨认
+const MODULE_LABEL = {
+  transactions: '收支', account_transactions: '账户存取', transfers: '转账',
+  loans: '借款', loan_payments: '借款收还', policy_payments: '保单缴费',
+  assets: '固定资产', asset_valuations: '资产估值', investment_accounts: '投资账户',
+  investment_flows: '投资流水', daily_pnl: '投资日盈亏', insurance_policies: '保单',
+  accounts: '现金账户', categories: '分类', custom_options: '自定义选项',
+  transaction_templates: '交易模板', scheduled_transactions: '定时交易',
+  attachments: '附件', reminder_rules: '提醒规则',
+}
+
 export default function Settings() {
   const navigate = useNavigate()
   const [loading, setLoading] = useState(false)
@@ -67,12 +78,92 @@ export default function Settings() {
     }
   }
 
+  // 系统健康（对账 / 数据版本 / 备份）—— 只读展示，不会自动改动任何东西
+  const [health, setHealth] = useState(null)
+  const [healthLoading, setHealthLoading] = useState(false)
+  const [backingUp, setBackingUp] = useState(false)
+  const [backupFiles, setBackupFiles] = useState([])
+
+  const loadHealth = async () => {
+    try {
+      const res = await api.get('/health')
+      setHealth(res.data)
+    } catch (e) { /* 忽略 */ }
+    try {
+      const res = await api.get('/data/backup/files')
+      setBackupFiles(res.data.files || [])
+    } catch (e) { /* 忽略 */ }
+  }
+
+  const refreshHealth = async () => {
+    setHealthLoading(true)
+    try {
+      await api.post('/system/health-refresh')
+      await loadHealth()
+      message.success('已重新检查')
+    } catch (e) {
+      message.error(errMsg(e, '重新检查失败'))
+    } finally {
+      setHealthLoading(false)
+    }
+  }
+
+  const backupNow = async () => {
+    setBackingUp(true)
+    try {
+      const res = await api.post('/data/backup/now')
+      message.success(res.data.message || '备份完成')
+      await loadHealth()
+    } catch (e) {
+      message.error(errMsg(e, '备份失败'))
+    } finally {
+      setBackingUp(false)
+    }
+  }
+
+  // 最近删除（回收站）
+  const [deleted, setDeleted] = useState(null)
+  const [deletedLoading, setDeletedLoading] = useState(false)
+
+  const loadDeleted = async () => {
+    setDeletedLoading(true)
+    try {
+      const res = await api.get('/data/deleted', { params: { limit: 200 } })
+      setDeleted(res.data)
+    } catch (e) { /* 忽略 */ } finally {
+      setDeletedLoading(false)
+    }
+  }
+
+  const exportDeleted = async () => {
+    try {
+      const res = await api.get('/data/deleted/export')
+      downloadJson(res.data, `family-wealth-已删除记录-${dayjs().format('YYYYMMDD-HHmmss')}.json`)
+    } catch (e) {
+      message.error(errMsg(e, '导出失败'))
+    }
+  }
+
+  const downloadJson = (data, filename) => {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
   useEffect(() => {
     api.get('/health').then((res) => {
       if (res.data && res.data.version) setVersion(res.data.version)
     }).catch(() => {})
     loadUsers()
     loadRules()
+    loadHealth()    // 系统健康区块（对账 / 数据版本 / 备份）
+    loadDeleted()   // 最近删除（回收站）
   }, [])
 
   const loadUsers = async () => {
@@ -355,6 +446,115 @@ export default function Settings() {
             <Button icon={<UploadOutlined />}>导入恢复</Button>
           </Upload>
           <Button danger onClick={() => setResetOpen(true)}>清空我的记录</Button>
+        </div>
+      </Card>
+
+      <Card
+        title="系统健康（对账 / 数据版本 / 备份）"
+        style={{ borderRadius: 12, marginBottom: 12 }}
+        extra={<Button size="small" icon={<SyncOutlined />} loading={healthLoading} onClick={refreshHealth}>重新检查</Button>}
+      >
+        {!health ? (
+          <span style={{ fontSize: 13, color: 'rgba(0,0,0,0.45)' }}>读取中…</span>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <Alert
+              showIcon
+              type={health.books_balanced === true ? 'success'
+                : health.books_balanced === false ? 'warning' : 'info'}
+              message={
+                health.books_balanced === true
+                  ? `账目平衡：${health.reconcile?.accounts ?? '?'} 个账户「期初基准 + 全部资金流水 = 实际余额」全部一致`
+                  : health.books_balanced === false
+                    ? `账目不平：${health.reconcile?.unbalanced} 个账户对不上`
+                      + (health.reconcile?.worst
+                        ? `，最大差异 ${health.reconcile.worst.diff} 元（${health.reconcile.worst.account}）` : '')
+                    : '对账结果未知'
+              }
+              description={
+                <span style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>
+                  {health.books_balanced === false
+                    ? '这不影响服务运行。请到「财富总览 → 余额对账」看明细；常见原因是手工改过余额、或漏记了一笔。'
+                    : `检查时间 ${health.reconcile?.checked_at || '—'}（后台约每 10 分钟刷新一次，点右上角可立即重算）`}
+                </span>
+              }
+            />
+            <Alert
+              showIcon
+              type={health.schema_ok ? 'success' : 'warning'}
+              message={`数据版本：代码 v${health.schema_code_version} ／ 数据库 v${health.schema_db_version ?? '未记录'}`}
+              description={<span style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>{health.schema_message}</span>}
+            />
+            <Alert
+              showIcon
+              type={health.backup_enabled === false ? 'info' : (health.backup_ok ? 'success' : 'warning')}
+              message={`自动备份：${health.backup_count ?? 0} 份${health.backup_enabled === false ? '（已关闭）' : ''}`}
+              description={
+                <div style={{ fontSize: 12 }}>
+                  <div>目录：<Tag style={{ fontFamily: 'monospace' }}>{health.backup_dir}</Tag></div>
+                  {health.backup_same_volume && (
+                    <div style={{ color: '#c2760a', marginTop: 4 }}>
+                      ⚠️ 备份目录与数据库同在 ./data 下 —— 卷损坏时两者会一起没。建议把环境变量 BACKUP_DIR 指到 NAS 上另一处目录。
+                    </div>
+                  )}
+                  <div style={{ marginTop: 4 }}>
+                    最近一份：{health.backup_latest_at || '—'}（{health.backup_message}）
+                  </div>
+                  {backupFiles.length > 0 && (
+                    <div style={{ marginTop: 4, color: 'rgba(0,0,0,0.45)' }}>
+                      最近文件：{backupFiles.slice(0, 3).map((f) => f.name).join('、')}
+                    </div>
+                  )}
+                </div>
+              }
+            />
+            <div>
+              <Button type="primary" loading={backingUp} onClick={backupNow}>立即备份</Button>
+              <span style={{ marginLeft: 8, fontSize: 12, color: 'rgba(0,0,0,0.45)' }}>
+                建议在升级前点一次；日常由后台每天自动备份一份
+              </span>
+            </div>
+          </div>
+        )}
+      </Card>
+
+      <Card
+        title="最近删除（回收站）"
+        style={{ borderRadius: 12, marginBottom: 12 }}
+        extra={
+          <span>
+            <Button size="small" loading={deletedLoading} onClick={loadDeleted} style={{ marginRight: 8 }}>刷新</Button>
+            <Button size="small" icon={<DownloadOutlined />} onClick={exportDeleted}>导出</Button>
+          </span>
+        }
+      >
+        <div style={{ marginBottom: 8, fontSize: 13, color: 'rgba(0,0,0,0.55)' }}>
+          删除记录时会先把原样存一份在这里，供事后找回。
+          <b>这份归档不参与账目与对账</b> —— 所以删掉东西不会让余额变化。
+          {deleted ? `共 ${deleted.total} 条。` : ''}
+        </div>
+        <Table
+          size="small"
+          rowKey="id"
+          loading={deletedLoading}
+          dataSource={deleted?.items || []}
+          pagination={{ pageSize: 8, size: 'small' }}
+          columns={[
+            {
+              title: '删除时间', dataIndex: 'deleted_at', width: 150,
+              render: (v) => (v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '—'),
+            },
+            {
+              title: '类型', dataIndex: 'module', width: 110,
+              render: (v) => MODULE_LABEL[v] || v,
+            },
+            { title: '摘要', dataIndex: 'label', ellipsis: true },
+            { title: '原 ID', dataIndex: 'record_id', width: 70 },
+          ]}
+        />
+        <div style={{ marginTop: 8, fontSize: 12, color: 'rgba(0,0,0,0.45)' }}>
+          找回方式：点「导出」拿到 JSON，里面每条都含被删记录的完整字段与补充说明（如退回了多少保费、从哪个账户），
+          按需手工重新录入即可。刻意不做「一键还原」—— 被删记录的父子关联已不存在，自动重建容易把账搞乱。
         </div>
       </Card>
 

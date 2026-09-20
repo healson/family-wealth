@@ -63,13 +63,20 @@ services:
       # ---- 更新检查（可选，只为「设置管理 → 系统更新」的检查按钮服务）----
       # 不配置也能正常用，只是点「检查更新」会提示「未配置来源」。
       # 该功能**只读**：不拉镜像、不重启容器，升级始终手动执行。
-      # 二选一即可：
+      # 二选一即可，推荐第 ① 种（不用在容器里放令牌）：
+      # ① 公开清单：放一个可公开访问的 JSON，内容形如 {"version":"1.9.0"}
       # - UPDATE_CHECK_MANIFEST_URL=https://example.com/family-wealth-version.json
-      #      公开可访问的 JSON，内容形如 {"version":"1.8.0"}；镜像私有又不想放令牌时用这个
+      # ② GitHub 令牌：查 Releases（本仓库私有，匿名查不到）
       # - GITHUB_TOKEN=ghp_xxx
-      #      有 repo 权限的 PAT，用于查询 GitHub Releases（本仓库私有，匿名查不到）
+      # ---- 自动备份（默认开启，每日一份并轮转；只为「自用没有第二个人兜底」）----
+      # ⚠️ 默认目录 ./data/backups 与数据库**同卷** —— 卷损坏时两者一起没。
+      #    建议指到 NAS 上另一处目录，才算真正多一份保险（宿主目录记得挂进来）。
+      # - BACKUP_DIR=/backups          # 需配合下面 volumes 里加一行挂载
+      # - BACKUP_KEEP=14               # 保留最近多少份
+      # - BACKUP_ENABLED=false         # 关闭自动备份（不推荐）
     volumes:
       - ./data:/data                 # SQLite 数据库持久化目录（重要！勿删）
+      # - /vol1/1000/backups/family-wealth:/backups   # 配合 BACKUP_DIR 指到异卷（NAS 上另一处目录）
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
       interval: 30s
