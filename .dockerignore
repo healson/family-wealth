@@ -1,4 +1,7 @@
 # Docker 构建上下文排除（减小体积、加快构建）
+# 注意：Dockerfile 是选择性 COPY（backend/app、backend/requirements.txt、
+# README.md、前端 dist），下列目录本就不会进镜像，排除它们只是为了让
+# 构建上下文更小、上传更快。
 node_modules
 frontend/node_modules
 frontend/dist
@@ -9,6 +12,8 @@ data
 *.sqlite
 .git
 .github
+check
+backend/tests
 .idea
 .vscode
 screenshots
@@ -17,4 +22,5 @@ __pycache__
 .venv
 venv
 family-wealth.tar.gz
+*.tar.gz
 *.log
