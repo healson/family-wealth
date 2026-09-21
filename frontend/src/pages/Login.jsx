@@ -1,5 +1,5 @@
 import React from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { GlobalOutlined, LockOutlined, UserOutlined } from '@ant-design/icons'
 import { Button, Form, Input, message } from 'antd'
 import api, { errMsg, getServer, setServer } from '../api'
@@ -12,17 +12,35 @@ function normalizeServer(input) {
   return `${v}/api`
 }
 
+// 退出登录后回到本页时的提示语（原因由 api.js 的 logout() 写在 ?reason= 上）
+const LOGOUT_NOTICE = {
+  idle: ['warning', '长时间未操作，已自动退出登录'],
+  expired: ['info', '登录状态已失效，请重新登录'],
+  manual: ['info', '已退出登录'],
+  renamed: ['info', '用户名已修改，请用新用户名登录'],
+}
+
 export default function Login() {
   const navigate = useNavigate()
+  const [params] = useSearchParams()
   const [loading, setLoading] = React.useState(false)
   const [version, setVersion] = React.useState('')
   const [server, setServerState] = React.useState(localStorage.getItem('fw_server') || '')
+  const noticed = React.useRef(false)
 
   React.useEffect(() => {
     api.get('/health').then((res) => {
       if (res.data && res.data.version) setVersion(`v${res.data.version}`)
     }).catch(() => {})
   }, [])
+
+  // 提示只弹一次（StrictMode 下 effect 会跑两次）
+  React.useEffect(() => {
+    if (noticed.current) return
+    noticed.current = true
+    const hit = LOGOUT_NOTICE[params.get('reason')]
+    if (hit) message[hit[0]](hit[1])
+  }, [params])
 
   const onFinish = async (values) => {
     setLoading(true)

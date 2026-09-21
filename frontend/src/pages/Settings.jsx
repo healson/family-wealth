@@ -1,9 +1,8 @@
 import React, { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { Alert, Button, Card, Form, Input, InputNumber, Modal, Popconfirm, Select, Switch, Table, Tag, Upload, message } from 'antd'
 import { PlusOutlined, UserSwitchOutlined, DownloadOutlined, UploadOutlined, ApiOutlined, SyncOutlined, CopyOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
-import api, { errMsg } from '../api'
+import api, { errMsg, logout } from '../api'
 
 // 更新检查来源的可读名（与后端 /api/system/update-check 的 source 字段对应）
 const UPDATE_SOURCE_LABEL = {
@@ -24,7 +23,6 @@ const MODULE_LABEL = {
 }
 
 export default function Settings() {
-  const navigate = useNavigate()
   const [loading, setLoading] = useState(false)
   const [version, setVersion] = useState('')
 
@@ -244,7 +242,7 @@ export default function Settings() {
     try {
       await api.put('/auth/me', { username: newName.trim() })
       message.success('用户名已修改，请重新登录')
-      logout()
+      logout('renamed')
     } catch (e) { message.error(errMsg(e, '修改失败')) }
   }
 
@@ -258,13 +256,6 @@ export default function Settings() {
     } finally {
       setLoading(false)
     }
-  }
-
-  const logout = () => {
-    localStorage.removeItem('fw_token')
-    localStorage.removeItem('fw_username')
-    localStorage.removeItem('fw_is_admin')
-    navigate('/login')
   }
 
   // 账号管理操作
@@ -392,7 +383,7 @@ export default function Settings() {
       )}
 
       <Card title="账户" style={{ borderRadius: 12, marginBottom: 12 }}>
-        <Button danger onClick={logout}>退出登录</Button>
+        <Button danger onClick={() => logout('manual')}>退出登录</Button>
       </Card>
 
       <Card title="提醒管理（续期/到期提醒）" style={{ borderRadius: 12, marginBottom: 12 }}>

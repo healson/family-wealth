@@ -13,7 +13,8 @@ import Settings from './pages/Settings'
 import Snapshot from './pages/Snapshot'
 import AIChat from './pages/AIChat'
 import Loans from './pages/Loans'
-import api, { errMsg } from './api'
+import api, { errMsg, logout } from './api'
+import useIdleLogout from './useIdleLogout'
 
 const { Header, Sider, Content } = Layout
 
@@ -46,6 +47,10 @@ function Shell() {
   const [docsOpen, setDocsOpen] = useState(false)
   const [docsHtml, setDocsHtml] = useState('')
   const username = localStorage.getItem('fw_username') || 'admin'
+
+  // 无操作超时自动退出（默认 5 分钟，VITE_IDLE_TIMEOUT_MINUTES 可调，设 0 关闭）。
+  // 挂在 Shell 上 → 只对已登录界面生效；公开的只读分享页 /snapshot 不受影响。
+  useIdleLogout(() => logout('idle'))
 
   // 安卓原生环境：系统返回键/手势返回 → 有历史则返回上一页，否则退出 App
   useEffect(() => {
