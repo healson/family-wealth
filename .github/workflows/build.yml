@@ -52,7 +52,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt pyyaml
 
-      - name: 后端回归测试（资金守恒 / 结清派生 / 出参契约 / 全接口冒烟 / 迁移幂等 / 更新检查 / 运行时自检 / 口径注册表）
+      - name: 后端回归测试（资金守恒 / 结清派生 / 出参契约 / 全接口冒烟 / 迁移幂等 / 更新检查 / 运行时自检 / 口径注册表 / 盈亏余额联动）
         # 每个脚本自带 DATA_DIR/STATIC_DIR 指向临时目录并预建 static/assets，
         # 不依赖仓库内任何状态；失败即非零退出，直接掐断本次构建。
         working-directory: backend/tests
@@ -61,7 +61,7 @@ jobs:
           for f in test_migrations.py test_loan_status.py test_balance_audit.py \
                    test_loan_api_contract.py test_api_smoke.py \
                    test_system_update_check.py test_runtime_selfcheck.py \
-                   test_flow_registry.py; do
+                   test_flow_registry.py test_pnl_balance_sync.py; do
             echo "::group::$f"
             python "$f"
             echo "::endgroup::"

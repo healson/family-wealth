@@ -17,7 +17,7 @@ from .database import SessionLocal, get_db
 # routers/system.py 会 `from ..main import VERSION`，若 VERSION 定义在导入之后，
 # 那个导入会拿到一个尚未初始化的模块并抛 ImportError。
 STATIC_DIR = os.environ.get("STATIC_DIR", "/app/static")
-VERSION = "1.10.0"
+VERSION = "1.10.1"
 
 from .routers import (  # noqa: E402  —— 必须在上面的常量之后导入
     accounts, admin, ai, assets, attachments, auth, bill_import, dashboard,

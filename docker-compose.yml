@@ -38,7 +38,7 @@ services:
     #     echo "<有 read:packages 权限的 PAT>" | docker login ghcr.io -u healson --password-stdin
     #
     # 默认用 :stable —— 跟随「最近一次正式发布」，主干开发不会悄悄影响生产。
-    # 想固定到具体版本（升级要手动改这行，最稳）：改 :1.8.0
+    # 想固定到具体版本（升级要手动改这行，最稳）：改 :1.10.1
     # 想随时尝鲜主干最新（有风险）：改 :latest
     # 想精确回溯（不可变）：@sha256:<digest>
     image: ghcr.io/healson/family-wealth:stable

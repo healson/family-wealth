@@ -203,6 +203,8 @@ def create_pnl(account_id: int, body: PnlCreate, db: Session = Depends(get_db), 
     data = coerce_money(body.model_dump())
     record = DailyPnl(account_id=account.id, user_id=user.id, **data)
     db.add(record)
+    # 盈亏记录联动更新账户当前市值，使「金融总资产」反映盈亏变动
+    account.balance = round(float(account.balance) + float(record.pnl), 2)
     db.commit()
     db.refresh(record)
     return record
@@ -217,6 +219,9 @@ def delete_pnl(account_id: int, pnl_id: int, db: Session = Depends(get_db), user
     ).first()
     if record is None:
         raise HTTPException(status_code=404, detail="盈亏记录不存在")
+    account = _get_owned(db, account_id, user.id)
+    # 删除盈亏记录时回滚其对账户市值的影响，保持资金守恒
+    account.balance = round(float(account.balance) - float(record.pnl), 2)
     archive_deleted(db, record)  # 删除前归档，供事后找回（只写不读）
     db.delete(record)
     db.commit()

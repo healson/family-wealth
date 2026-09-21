@@ -191,7 +191,7 @@ class InvestmentAccount(Base):
     name: Mapped[str] = mapped_column(String(100))
     type: Mapped[str] = mapped_column(String(20), default="券商")  # 券商/基金/银行理财/其他
     bucket: Mapped[str] = mapped_column(String(20), default="long_term")  # 资金用途：emergency 应急/stable 稳健/long_term 长期
-    balance: Mapped[float] = mapped_column(Numeric(18, 2), default=0)  # 当前总市值/余额（手动维护）
+    balance: Mapped[float] = mapped_column(Numeric(18, 2), default=0)  # 当前总市值（联动维护：记账初值 + 累计盈亏 ± 累计转入/转出）
     cash_account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True, index=True)  # 关联现金账户（转入/转出资金来源）
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
